@@ -132,7 +132,7 @@ def configure_provider(config, preset=None, suggested=None):
         if yes(f'Run {engine} login now? Choose no to reuse this login', False):
             command = ['codex', 'login'] if engine == 'codex' else ['claude', 'auth', 'login']
             subprocess.run(command, check=True, env=login_env)
-        model = ask('Model ID (blank uses provider default)')
+        model = ask('Planner model ID (blank uses provider default)')
         profile = {'engine': engine, 'model': model}
         if directory: profile['claude_config_dir'] = directory
     elif engine in ('grok', 'openai'):
@@ -140,7 +140,7 @@ def configure_provider(config, preset=None, suggested=None):
         print('API authentication: set the provider key in your shell or secret manager. Do not paste it here.')
         base = ask('OpenAI-compatible base URL', 'https://api.x.ai/v1' if engine == 'grok' else '')
         env = ask('Environment variable containing the API key', 'XAI_API_KEY' if engine == 'grok' else 'OPENAI_API_KEY')
-        model = ask('Exact provider model ID')
+        model = ask('Planner model ID (exact provider ID)')
         profile = {'engine': 'openai', 'model': model, 'base_url': base, 'key_env': env}
         validate(profile)
         if not os.environ.get(env): print(f'Authentication pending: export {env} before running this alias.')
