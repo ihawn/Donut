@@ -17,7 +17,7 @@ def main():
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument('-m', '--model', default=argparse.SUPPRESS, help='configured model alias')
     shared.add_argument('-p', '--project', default=argparse.SUPPRESS, help='project path (default: current directory)')
-    parser = argparse.ArgumentParser(prog='donut', parents=[shared], description='Small tickets. Fresh contexts. Local or hosted coding agents.')
+    parser = argparse.ArgumentParser(prog='donut', parents=[shared], description='Big brains. Local muscle. Local or hosted coding agents.')
     parser.add_argument('-v', '--version', action='version', version='donut ' + release_version())
     sub = parser.add_subparsers(dest='action', required=True)
     init = sub.add_parser('setup', parents=[shared], help='choose local/hosted orchestrator, discover models and set up project')

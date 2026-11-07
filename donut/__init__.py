@@ -1,1 +1,1 @@
-"""Donut: small tickets, fresh contexts."""
+"""Donut: Big brains. Local muscle."""

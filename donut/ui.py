@@ -32,7 +32,7 @@ def paint(text, color='teal'):
 
 
 def banner():
-    print(paint(' ◉ ', 'orange') + paint('DONUT', 'teal') + paint('  small tickets · fresh contexts', 'gray'))
+    print(paint(' ◉ ', 'orange') + paint('DONUT', 'teal') + paint('  Big brains. Local muscle.', 'gray'))
     print(''.join(paint('━' * 7, color) for color in COLORS))
 
 
@@ -48,7 +48,7 @@ def welcome(installed=False):
     release = release_version()
     print(LOGO)
     print(paint('  DONUT', 'teal') + paint('  /  ' + release, 'orange'))
-    print('  Small tickets. Fresh contexts.')
+    print('  Big brains. Local muscle.')
     print(paint('  ' + '-' * 38, 'gray'))
     if installed:
         print(paint('  [OK] Installation complete.', 'teal'))

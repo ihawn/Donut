@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">Donut</h1>
-<p align="center"><strong>Small tickets. Fresh contexts. Do the thing.</strong></p>
+<p align="center"><strong>Big brains. Local muscle. Do the thing.</strong></p>
 <p align="center">Your planning model writes the tickets. Your worker model takes them one at a time.</p>
 
 <p align="center">
