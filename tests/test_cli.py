@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 from donut.cli import main
@@ -49,6 +50,72 @@ class CLITests(unittest.TestCase):
                 self.assertEqual(activate.call_count,2)
                 self.assertEqual(run.call_args.args[0],profile)
                 self.assertIn('Planning only',run.call_args.args[2])
+
+    def test_plan_loop_creates_lanes_and_preserves_followup_context(self):
+        profile = {'engine': 'codex', 'model': 'planner-model'}
+        save({'aliases': {'planner': profile}, 'planner': 'planner'})
+        output = io.StringIO()
+        with patch('sys.argv', ['donut', '--plan', '-p', str(self.root)]), patch('builtins.input', side_effect=['', 'Add a menu', 'Make that keyboard accessible', '/exit']), patch('donut.cli.activate'), patch('donut.cli.run_agent', return_value=0) as run, patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root/'state')}), contextlib.redirect_stdout(output):
+            self.assertEqual(main(), 0)
+        for lane in ('to_do', 'in_progress', 'done'):
+            self.assertTrue((self.root/'swim_lanes'/lane).is_dir())
+        self.assertTrue((self.root/'skills/donut-planner/SKILL.md').is_file())
+        self.assertEqual(run.call_count, 2)
+        second = run.call_args.args[2]
+        self.assertIn('Add a menu', second)
+        self.assertIn('Make that keyboard accessible', second)
+        self.assertIn('001.log', second)
+        self.assertNotEqual(run.call_args_list[0].args[3], run.call_args_list[1].args[3])
+        self.assertFalse(run.call_args.kwargs.get('summary', False))
+        self.assertEqual(output.getvalue().count('PLANNING COMPLETE'), 2)
+        self.assertEqual(output.getvalue().count('Try running `donut --work`'), 2)
+
+    def test_interactive_planning_streams_thinking_and_writes_tickets(self):
+        save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})
+        script = self.root/'fake_planner.py'
+        script.write_text("import sys, json\nfrom pathlib import Path\nprompt = sys.stdin.read()\n"
+                          "assert 'swim_lanes/to_do/' in prompt\n"
+                          "Path('swim_lanes/to_do/001_menu.md').write_text('**Slug:** `menu`\\n**Depends on:** None\\n')\n"
+                          "print(json.dumps({'type': 'item.completed', 'item': {'type': 'reasoning', 'text': 'Checking menu scope'}}))\n"
+                          "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Created the menu ticket'}}))\n")
+        output = io.StringIO()
+        with patch('sys.argv', ['donut', '--plan', '-p', str(self.root)]), patch('builtins.input', side_effect=['Plan a menu', '/exit']), patch('donut.runner.command', return_value=([sys.executable, str(script)], os.environ.copy())), patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root/'state')}), contextlib.redirect_stdout(output):
+            self.assertEqual(main(), 0)
+        self.assertTrue((self.root/'swim_lanes/to_do/001_menu.md').is_file())
+        self.assertIn('Checking menu scope', output.getvalue())
+        self.assertIn('Created the menu ticket', output.getvalue())
+        self.assertIn('PLANNING COMPLETE', output.getvalue())
+
+    def test_new_modes_select_defaults_and_explicit_overrides(self):
+        profiles = {'planner': {'engine': 'codex', 'model': 'planning'}, 'worker': {'engine': 'codex', 'model': 'working'}, 'override': {'engine': 'claude', 'model': 'chosen'}}
+        save({'aliases': profiles, 'planner': 'planner', 'default_model': 'worker'})
+        cases = [(['--plan'], 'planner', 'plan'), (['--plan', '-m', 'override'], 'override', 'plan'), (['--model', 'override', '--plan'], 'override', 'plan'), (['--work'], 'worker', 'work'), (['--work', '3', '--model', 'override'], 'override', 'work'), (['-m', 'override', '--work', '1'], 'override', 'work')]
+        for argv, alias, mode in cases:
+            with self.subTest(argv=argv), patch('sys.argv', ['donut', *argv, '-p', str(self.root)]), patch('donut.cli.plan_session', return_value=0) as plan, patch('donut.cli.run_batch', return_value=0) as work, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(), 0)
+                called = plan if mode == 'plan' else work
+                self.assertEqual(called.call_args.args[0], profiles[alias])
+                if argv == ['--work']: self.assertEqual(work.call_args.args[2], 'all')
+
+    def test_planning_failure_does_not_print_completion(self):
+        save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})
+        output = io.StringIO()
+        with patch('sys.argv', ['donut', '--plan', 'Add a menu', '-p', str(self.root)]), patch('donut.cli.install'), patch('donut.cli.activate'), patch('donut.cli.run_agent', return_value=7), patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root/'state')}), contextlib.redirect_stdout(output):
+            self.assertEqual(main(), 7)
+        self.assertIn('PLANNING FAILED', output.getvalue())
+        self.assertNotIn('PLANNING COMPLETE', output.getvalue())
+
+    def test_interactive_eof_starts_no_model(self):
+        save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})
+        with patch('sys.argv', ['donut', '--plan', '-p', str(self.root)]), patch('builtins.input', side_effect=EOFError), patch('donut.cli.install'), patch('donut.cli.run_agent') as run, patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root/'state')}), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(), 0)
+        run.assert_not_called()
+
+    def test_conflicting_modes_rejected(self):
+        for argv in (['--plan', '--work'], ['--plan', 'hello', 'models'], ['--work', '2', 'setup']):
+            with self.subTest(argv=argv), patch('sys.argv', ['donut', *argv]), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                main()
+            self.assertEqual(result.exception.code, 2)
 
     def test_unknown_alias_does_not_launch_agent(self):
         with patch('sys.argv', ['donut', '-m', 'missing', 'do', 'next', '1']), patch('donut.cli.run_batch') as run, contextlib.redirect_stderr(io.StringIO()):

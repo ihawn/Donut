@@ -38,8 +38,8 @@ After [installing](#install), open your project and choose your models:
 
 ```sh
 donut setup
-donut -m planner plan "Add wall jumping with a human feel check"
-donut -m worker do next 3
+donut --plan                     # interactive planner; describe what you want
+donut --work                     # execute all eligible tickets one at a time
 ```
 
 `planner` and `worker` are aliases **you choose during setup**, not built-in model names.
@@ -47,8 +47,8 @@ donut -m worker do next 3
 ```sh
 donut -v                          # installed version (also --version)
 donut models                      # your configured aliases
-donut -m worker do next all        # all eligible tickets, one fresh context each
-donut -m worker do next 1 -p ../app # work in another project
+donut -m worker --work        # all eligible tickets, one fresh context each
+donut -m worker --work 1 -p ../app # work in another project
 donut -h                          # all commands
 ```
 
@@ -128,12 +128,18 @@ Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.c
 ## Plan and build
 
 ```sh
-donut plan "Add wall jumping, with a human feel check"
-donut -m qwen plan "Add wall jumping"  # local orchestrator
-donut -m qwen-faster do next 3
-donut -m qwen do next all
-donut -m cloud-worker do next 1 --project ../another-project
+donut --plan                     # interactive session
+donut -m qwen --plan "Add wall jumping"  # local orchestrator
+donut -m qwen-faster --work 3
+donut -m qwen --work
+donut -m cloud-worker --work 1 --project ../another-project
 ```
+
+Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. Its available thinking, tool activity, and answers stream as it works. After each successful prompt it prints **PLANNING COMPLETE** and **Try running `donut --work`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+
+Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
+
+`donut --work` processes all eligible tickets, one fresh worker context per ticket. Use `donut --work 3` to limit the run, or `donut --work all` explicitly. The older `donut plan "request"` and `donut do next COUNT` forms remain compatible.
 
 `-m` / `--model` accepts a configured alias for either planning or execution. The planner/orchestrator and worker may be the same local model, different local models, or hosted models. Setup stores a default planner separately from the default worker. `-p` / `--project` accepts an absolute or relative directory and defaults to the current directory. Flags work before or after the subcommand. `donut -h` lists commands.
 
@@ -141,7 +147,7 @@ donut -m cloud-worker do next 1 --project ../another-project
 
 - `swim_lanes/{to_do,in_progress,done}/`
 - `.qwen/skills/swim-lane-worker/SKILL.md`, connected through `QWEN.md`
-- `skills/donut-planner/SKILL.md`, explicitly loaded by `donut plan` (including Codex), plus Claude/Cursor skill copies
+- `skills/donut-planner/SKILL.md`, explicitly loaded by `donut --plan` (including Codex), plus Claude/Cursor skill copies
 - Relevant locally available Unity skills when a Unity project is detected
 
 No game-specific rules are copied from another project. If this project has `skills/project-rules/SKILL.md`, its worker import is connected. Planner instructions are deliberately not placed in `AGENTS.md` or `.agents/skills`, since Qwen also reads those locations.

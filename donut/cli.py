@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,46 @@ from .setup import setup, discover
 from .ui import banner, welcome, release_version, paint
 
 
+def plan_session(profile, alias, project, request=None):
+    install(project, Path.home())
+    state = Path(os.environ.get('XDG_STATE_HOME', Path.home()/'.local/state'))/'donut'
+    state.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix='plan-', dir=state))
+    print(f'Planner: {alias}\nProject: {project}\nLogs: {run}')
+    interactive = request is None
+    if interactive:
+        print('Describe what to plan. Enter /exit to leave (or Ctrl-D; Windows: Ctrl-Z then Enter).')
+    history = []
+    while True:
+        if interactive:
+            try:
+                request = input(paint('\nPlan > ', 'teal')).strip()
+            except EOFError:
+                return 0
+            if request in ('/exit', '/quit'): return 0
+            if not request: continue
+        prompt = ('Planning only: read skills/donut-planner/SKILL.md and project instructions. '
+                  'This explicit planner assignment overrides worker-only prohibitions on creating tickets. '
+                  'Research the request and write scoped tickets in swim_lanes/to_do/. Inspect existing tickets '
+                  'before adding or updating them; preserve work already in progress or done. Do not implement, '
+                  'commit or push. Earlier user requests in this planning session:\n' + json.dumps(history) +
+                  '\nUser request:\n' + request)
+        if history:
+            prompt += f'\nPrevious planner output (consult for follow-up context): {run / f"{len(history):03}.log"}'
+        activate(profile)
+        try:
+            code = run_agent(profile, project, prompt, run/f'{len(history) + 1:03}.log')
+        finally:
+            if profile['engine'] == 'ollama': activate(profile)
+        if code:
+            print(paint('PLANNING FAILED\nCheck the output and logs before running workers.', 'coral'))
+            return code
+        history.append(request)
+        print(paint('\nPLANNING COMPLETE', 'teal'))
+        print('Try running `donut --work`')
+        if not interactive: return 0
+
+
 def main():
     # Shared flags work both before and after the subcommand.
     shared = argparse.ArgumentParser(add_help=False)
@@ -19,7 +60,10 @@ def main():
     shared.add_argument('-p', '--project', default=argparse.SUPPRESS, help='project path (default: current directory)')
     parser = argparse.ArgumentParser(prog='donut', parents=[shared], description='Your planning model writes the tickets. Your worker model takes them one at a time. Do the thing. Local or hosted coding agents.')
     parser.add_argument('-v', '--version', action='version', version='donut ' + release_version())
-    sub = parser.add_subparsers(dest='action', required=True)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--plan', nargs='?', const='', metavar='REQUEST', help='open interactive planner; optionally plan one quoted request')
+    modes.add_argument('--work', nargs='?', const='all', metavar='COUNT', help='work all eligible tickets, or a positive count, one fresh context each')
+    sub = parser.add_subparsers(dest='action')
     init = sub.add_parser('setup', parents=[shared], help='choose local/hosted orchestrator, discover models and set up project')
     init.add_argument('--scan', help='additional directory to scan for model files')
     sub.add_parser('welcome', help='show the installation welcome screen')
@@ -28,12 +72,19 @@ def main():
     scan.add_argument('--scan', help='directory to scan instead of common model folders')
     for name in ('init', 'add-skills'):
         sub.add_parser(name, parents=[shared], help='install planner/worker skills and swim lanes')
-    work = sub.add_parser('do', parents=[shared], help='execute tickets in fresh agent sessions')
+    work = sub.add_parser('do', parents=[shared], help='compatibility form of --work COUNT')
     work.add_argument('next', choices=['next'])
     work.add_argument('count', help='positive number or all')
-    plan = sub.add_parser('plan', parents=[shared], help='ask the planning agent to research and write tickets')
+    plan = sub.add_parser('plan', parents=[shared], help='compatibility form of --plan REQUEST')
     plan.add_argument('request', help='quoted description of the work to plan')
     args = parser.parse_args()
+    if args.plan is not None or args.work is not None:
+        if args.action: parser.error('Use --plan or --work without a subcommand.')
+        if args.plan is not None:
+            args.action, args.request = 'plan', args.plan or None
+        else:
+            args.action, args.count = 'do', args.work
+    if not args.action: parser.error('Choose --plan, --work, or a subcommand such as setup.')
     if args.action == 'welcome':
         welcome(installed=True)
         return 0
@@ -62,19 +113,7 @@ def main():
         validate(profile)
         banner()
         if args.action == 'do': return run_batch(profile, project, args.count)
-        install(project, Path.home())
-        prompt = ('Planning only: read skills/donut-planner/SKILL.md and project instructions. '
-                  'This explicit planner assignment overrides worker-only prohibitions on creating tickets. '
-                  'Research the request and write scoped tickets in swim_lanes/to_do/. Do not implement, '
-                  'commit or push. User request:\n' + args.request)
-        state = Path(os.environ.get('XDG_STATE_HOME', Path.home()/'.local/state'))/'donut'
-        state.mkdir(parents=True, exist_ok=True)
-        run = Path(tempfile.mkdtemp(prefix='plan-', dir=state))
-        print(f'Planner: {alias}\nLogs: {run}')
-        activate(profile)
-        code = run_agent(profile, project, prompt, run/'planner.log')
-        if profile['engine'] == 'ollama': activate(profile)
-        return code
+        return plan_session(profile, alias, project, args.request)
     except KeyboardInterrupt:
         print('\nCancelled.', file=sys.stderr); return 130
     except (ValueError, OSError, subprocess.SubprocessError) as error:

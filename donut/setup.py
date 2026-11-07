@@ -219,5 +219,6 @@ def setup(project, root=None):
             profile = config['aliases'][alias]
             print(f'  {role:7} {alias}  →  {profile.get("model") or profile["engine"] + " default"}')
             if profile.get('claude_config_dir'): print('          Login folder: ' + profile['claude_config_dir'])
-    print(paint('  donut plan "your request"\n  donut do next 3\n  donut models', 'orange'))
     print('For local residency, set OLLAMA_KEEP_ALIVE=1h on your Ollama server. Donut also refreshes it after runs.')
+    print(paint('\nSETUP COMPLETE', 'teal'))
+    print('Try running `donut --plan`')
