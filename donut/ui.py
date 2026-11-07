@@ -78,3 +78,37 @@ class Progress:
         elif elapsed - self.last >= 15:
             print(f'[Working · {elapsed}s elapsed · waiting for agent output]', flush=True)
             self.last = elapsed
+
+
+class CodeStream:
+    """Highlight Markdown code a line at a time, including split stream deltas."""
+    def __init__(self):
+        self.pending = ''
+        self.fence = None
+
+    def feed(self, text, final=False):
+        import re
+        self.pending += text
+        output = []
+        while '\n' in self.pending or (final and self.pending) or len(self.pending) >= 4096:
+            end = self.pending.find('\n') + 1
+            if not end: end = min(len(self.pending), 4096)
+            line, self.pending = self.pending[:end], self.pending[end:]
+            marker = re.match(r'^\s*(`{3,}|~{3,})', line)
+            if marker:
+                delimiter = marker[1]
+                if self.fence is None: self.fence = delimiter
+                elif delimiter[0] == self.fence[0] and len(delimiter) >= len(self.fence): self.fence = None
+                output.append(paint(line, 'teal'))
+            elif self.fence:
+                # Lightweight language-neutral tokens; no lexer dependency.
+                tokens = re.split(r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|\b\d+(?:\.\d+)?\b|\b(?:class|def|return|if|else|for|while|import|from|const|let|var|function|public|private|void|new|true|false|null|None|await|async)\b|//[^\n]*|#[^\n]*)', line)
+                for index, token in enumerate(tokens):
+                    color = 'gray'
+                    if index % 2:
+                        color = 'teal' if token.startswith(('"', "'")) else 'orange' if token[:1].isdigit() else 'teal' if token.startswith(('//', '#')) else 'coral'
+                    output.append(paint(token, color))
+            else:
+                output.append(''.join(paint(part, 'orange' if i % 2 else 'teal' if part.startswith('[') else 'gray')
+                                      for i, part in enumerate(re.split(r'(`[^`\n]+`)', line))))
+        return ''.join(output)

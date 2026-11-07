@@ -11,12 +11,35 @@ from .ui import welcome, paint
 
 
 def ask(label, default=''):
-    answer = input(f'{label}' + (f' [{default}]' if default else '') + ': ').strip()
+    answer = input(paint('  ' + label, 'gray') + (paint(f' [{default}]', 'orange') if default else '') + paint(' > ', 'teal')).strip()
     return answer or default
 
 
 def yes(label, default=False):
     return ask(label + ' (y/n)', 'y' if default else 'n').lower() in ('y', 'yes')
+
+
+def choose(label, options, default=None):
+    for index, option in enumerate(options, 1):
+        print(paint(f'  {index:>2}  ', 'teal') + option)
+    while True:
+        value = ask(label + ' (number or name)', default or options[0])
+        if value.isdecimal() and 1 <= int(value) <= len(options):
+            return options[int(value) - 1]
+        if value in options: return value
+        print(paint('Choose one of the listed options.', 'coral'))
+
+
+def claude_directory():
+    current = str(Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home()/'.claude')).expanduser().resolve())
+    paths = list(dict.fromkeys([current, str(Path.home()/'.claude')] +
+                 [str(p) for p in sorted(Path.home().glob('.claude-*')) if p.is_dir()]))
+    print('  Claude login is selected by its configuration folder, not the Donut alias.')
+    selected = choose('Claude login folder', paths + ['Custom path'], current)
+    if selected == 'Custom path':
+        selected = ask('Configuration folder (existing login or a new folder)')
+        if not selected: raise ValueError('A configuration folder is required')
+    return str(Path(selected).expanduser().resolve())
 
 
 def discover(root=None):
@@ -43,7 +66,7 @@ def discover(root=None):
 
 def add_alias(config, profile, suggested=''):
     while True:
-        alias = ask('Alias (blank to skip)', suggested)
+        alias = ask('Donut alias (Enter keeps suggestion)' if suggested else 'Donut alias (Enter skips)', suggested)
         if not alias: return None
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', alias):
             print('Use letters, numbers, hyphens or underscores.'); continue
@@ -55,25 +78,28 @@ def add_alias(config, profile, suggested=''):
 
 
 def configure_provider(config):
-    engine = ask('Orchestrator/provider: ollama (local), codex, claude, grok, or openai', 'codex').lower()
-    if engine == 'local': engine = 'ollama'
+    engine = choose('Provider', ['codex', 'claude', 'ollama', 'grok', 'openai'], 'codex')
     if engine == 'ollama':
         for binary in ('ollama', 'qwen'):
             if not shutil.which(binary): raise ValueError(f'Install {binary} to use a local orchestrator.')
         result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=15, check=True)
         models = [line.split()[0] for line in result.stdout.splitlines()[1:] if line.split()]
         if not models: raise ValueError('No Ollama models found. Pull or import a model, then rerun setup.')
-        print('Available local models:\n' + '\n'.join('  ' + model for model in models))
-        model = ask('Local orchestrator model ID', models[0])
+        model = choose('Local model', models)
         if model not in models: raise ValueError('Select an installed model from the list.')
         profile = {'engine': 'ollama', 'model': model}
     elif engine in ('codex', 'claude'):
         if not shutil.which(engine): raise ValueError(f'Install {engine}, then rerun donut setup.')
-        if yes(f'Run {engine} login now? Choose no if already signed in', True):
+        directory = claude_directory() if engine == 'claude' else None
+        login_env = os.environ.copy()
+        if directory: login_env['CLAUDE_CONFIG_DIR'] = directory
+        print(f'  Executable: {shutil.which(engine)}')
+        if yes(f'Run {engine} login now? Choose no to reuse this login', False):
             command = ['codex', 'login'] if engine == 'codex' else ['claude', 'auth', 'login']
-            subprocess.run(command, check=True)
+            subprocess.run(command, check=True, env=login_env)
         model = ask('Model ID (blank uses provider default)')
         profile = {'engine': engine, 'model': model}
+        if directory: profile['claude_config_dir'] = directory
     elif engine in ('grok', 'openai'):
         if not shutil.which('qwen'): raise ValueError('Install Qwen Code to use OpenAI-compatible endpoints.')
         print('API authentication: set the provider key in your shell or secret manager. Do not paste it here.')
@@ -86,6 +112,7 @@ def configure_provider(config):
     else:
         raise ValueError('Choose ollama, codex, claude, grok, or openai.')
     profile['auto_approve'] = yes('Allow this agent to run tools without approval in projects you select?')
+    print('  An alias is a nickname for these settings; it does not change your account.')
     alias = add_alias(config, profile, engine)
     if alias:
         config['planner'] = alias
@@ -95,14 +122,33 @@ def configure_provider(config):
 
 def setup(project, root=None):
     welcome()
-    print('Choose a local or hosted orchestrator to plan tickets. Cloud login is optional.')
+    print('  Planner: writes tickets. Worker: builds one ticket per fresh context.')
+    print('  One model can do both jobs. Existing aliases are kept unless you replace them.')
+    print(paint('\n  1 / 3  CHOOSE YOUR PLANNER\n  ' + '─' * 42, 'teal'))
     config = load()
-    configure_provider(config)
-    print(paint('\nDiscovering local models…', 'orange'), flush=True)
+    if config['aliases']:
+        selected = choose('Planner alias', list(config['aliases']) + ['Add new provider'], config.get('planner') or 'Add new provider')
+        if selected == 'Add new provider': configure_provider(config)
+        else: config['planner'] = selected
+    else:
+        configure_provider(config)
+    print(paint('\n  2 / 3  ADD WORKER MODELS\n  ' + '─' * 42, 'teal'))
+    print(paint('  Discovering local models…', 'orange'), flush=True)
     models, files = discover(root)
-    for model in models:
-        print(f'\nOllama: {model}')
-        add_alias(config, {'engine': 'ollama', 'model': model, 'auto_approve': True})
+    for index, model in enumerate(models, 1):
+        aliases = [name for name, p in config['aliases'].items() if p['engine'] == 'ollama' and p.get('model') == model]
+        print(paint(f'  {index:>2}  ', 'teal') + model + paint('  [' + (', '.join(aliases) or 'not configured') + ']', 'orange'))
+    if models:
+        print('  Select only the models you want to add. Different names may refer to the same weights.')
+        while True:
+            selected = ask('Model numbers, separated by spaces (Enter skips)')
+            numbers = selected.split()
+            if all(n.isdecimal() and 1 <= int(n) <= len(models) for n in numbers): break
+            print(paint('Use model numbers from the list.', 'coral'))
+        for number in dict.fromkeys(numbers):
+            model = models[int(number) - 1]
+            print(paint('  ' + model, 'orange'))
+            add_alias(config, {'engine': 'ollama', 'model': model, 'auto_approve': True})
     for filename in files:
         print(f'\nModel files: {filename}')
         if filename.endswith('.gguf') and shutil.which('ollama') and yes('Import this GGUF into Ollama?'):
@@ -121,11 +167,19 @@ def setup(project, root=None):
         configure_provider(config)
         config['planner'] = planner
         save(config)
+    print(paint('\n  3 / 3  CHOOSE YOUR DEFAULT WORKER\n  ' + '─' * 42, 'teal'))
     if config['aliases']:
-        default = ask('Default worker alias', config.get('default_model', next(iter(config['aliases']))))
+        default = choose('Worker alias', list(config['aliases']), config.get('default_model', next(iter(config['aliases']))))
         if default not in config['aliases']: raise ValueError('Unknown default alias')
         config['default_model'] = default
         save(config)
     install(project, Path.home())
-    print('\nSetup saved. Run donut models, donut plan "your request", or donut -m ALIAS do next 3.')
+    print(paint('\n  READY  /  Setup saved', 'teal'))
+    for role, key in [('Planner', 'planner'), ('Worker', 'default_model')]:
+        alias = config.get(key)
+        if alias:
+            profile = config['aliases'][alias]
+            print(f'  {role:7} {alias}  →  {profile.get("model") or profile["engine"] + " default"}')
+            if profile.get('claude_config_dir'): print('          Login folder: ' + profile['claude_config_dir'])
+    print(paint('  donut plan "your request"\n  donut do next 3\n  donut models', 'orange'))
     print('For local residency, set OLLAMA_KEEP_ALIVE=1h on your Ollama server. Donut also refreshes it after runs.')

@@ -4,7 +4,7 @@ import json
 import os
 from unittest.mock import patch
 import unittest
-from donut.ui import Progress, paint, welcome, LOGO
+from donut.ui import Progress, paint, welcome, LOGO, CodeStream
 from donut.runner import render_event
 
 class UITests(unittest.TestCase):
@@ -48,6 +48,29 @@ class UITests(unittest.TestCase):
             welcome()
         self.assertIn('SETUP', stream.getvalue())
         self.assertNotIn('Installation complete', stream.getvalue())
+
+    def test_code_highlighting_survives_split_deltas(self):
+        text = 'Explanation `inline`\n```python\ndef example():\n    return "hello" + 42\n```\nDone\n'
+        stream = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(stream), patch.object(stream, 'isatty', return_value=True):
+            renderer = CodeStream()
+            output = ''.join(renderer.feed(character) for character in text) + renderer.feed('', final=True)
+        import re
+        self.assertEqual(re.sub(r'\x1b\[[0-9;]*m', '', output), text)
+        self.assertIn('38;2;255;94;78mdef', output)
+        self.assertIsNone(renderer.fence)
+
+    def test_code_highlighting_respects_no_color_and_flushes(self):
+        with patch.dict(os.environ, {'NO_COLOR': '1'}):
+            renderer = CodeStream()
+            output = renderer.feed('```cs\nreturn 1;') + renderer.feed('', final=True)
+        self.assertEqual(output, '```cs\nreturn 1;')
+
+    def test_model_labels(self):
+        event = {'type': 'stream_event', 'event': {'type': 'content_block_start', 'content_block': {'type': 'text', 'text': 'Hello'}}}
+        rendered = render_event(json.dumps(event), model='qwen3.8:27b')
+        self.assertIn('[qwen3.8:27b]', rendered)
+        self.assertNotIn('[Agent]', rendered)
 
     def test_codex_output(self):
         output=render_event(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'READY'}}))

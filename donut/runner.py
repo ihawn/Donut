@@ -12,7 +12,7 @@ import queue
 import threading
 from .providers import command, activate
 from .platform import acquire_lock, process_options, stop_process
-from .ui import Progress, paint
+from .ui import Progress, paint, CodeStream
 
 
 def tasks(project, lane):
@@ -49,7 +49,7 @@ def pick(project, attempted):
     return None
 
 
-def render_event(line, show_thinking=True):
+def render_event(line, show_thinking=True, model="Agent"):
     """Render Qwen's emitted stream; complete assistant messages repeat its deltas."""
     try:
         item = json.loads(line)
@@ -58,14 +58,14 @@ def render_event(line, show_thinking=True):
     if not isinstance(item, dict):
         return line
     if item.get('type') == 'system' and item.get('subtype') == 'init':
-        return '\n[Connected · preparing project context]\n'
+        return '\n[' + model + ' · Connected · preparing project context]\n'
     if item.get('type') in ('item.started', 'item.completed'):
         entry = item.get('item', {})
         kind = entry.get('type', '')
         if kind == 'reasoning' and not show_thinking: return ''
         if item['type'] == 'item.started':
             return ('\n[Tool: ' + entry.get('command', kind) + ']\n') if kind == 'command_execution' else ''
-        return '\n[' + ('Thinking' if kind == 'reasoning' else kind) + ']\n' + str(
+        return '\n[' + (model + ' · Thinking' if kind == 'reasoning' else model if kind == 'agent_message' else kind) + ']\n' + str(
             entry.get('text', entry.get('aggregated_output', entry.get('changes', '')))) + '\n'
     if item.get('type') in ('error', 'turn.failed'):
         return '\n[Error] ' + json.dumps(item, ensure_ascii=False) + '\n'
@@ -76,9 +76,9 @@ def render_event(line, show_thinking=True):
             block = event.get('content_block', {})
             if block.get('type') == 'thinking':
                 if not show_thinking: return ''
-                return '\n[Thinking]\n' + block.get('thinking', '')
+                return '\n[' + model + ' · Thinking]\n' + block.get('thinking', '')
             if block.get('type') == 'text':
-                return '\n[Agent]\n' + block.get('text', '')
+                return '\n[' + model + ']\n' + block.get('text', '')
             if block.get('type') == 'tool_use':
                 return '\n[Tool: ' + block.get('name', '?') + ']\n'
         if kind == 'content_block_delta':
@@ -103,9 +103,10 @@ def run_agent(profile, project, prompt, log, summary=False):
     log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(log.parent, 0o700)
     progress = Progress()
+    styled = CodeStream()
+    model = profile.get("model") or profile["engine"] + " (provider default)"
     events = queue.Queue()
     failed = False
-    line_open = False
     with log.open('w', encoding='utf-8') as output, log.with_suffix('.jsonl').open('w', encoding='utf-8') as raw:
         os.chmod(log, 0o600)
         os.chmod(log.with_suffix('.jsonl'), 0o600)
@@ -131,10 +132,6 @@ def run_agent(profile, project, prompt, log, summary=False):
                 try:
                     line = events.get(timeout=0.2)
                 except queue.Empty:
-                    if line_open:
-                        print(flush=True)
-                        output.write('\n')
-                        line_open = False
                     progress.tick()
                     continue
                 progress.clear()
@@ -143,15 +140,15 @@ def run_agent(profile, project, prompt, log, summary=False):
                 raw.flush()
                 try:
                     item = json.loads(line)
+                    if isinstance(item, dict) and item.get('type') == 'system' and item.get('subtype') == 'init' and isinstance(item.get('model'), str):
+                        model = item['model']
                     if isinstance(item, dict) and (item.get('is_error') or item.get('type') == 'turn.failed'):
                         failed = True
                 except ValueError:
                     pass
-                rendered = render_event(line, show_thinking=not summary)
+                rendered = render_event(line, show_thinking=not summary, model=model)
                 if rendered:
-                    color = 'orange' if '[Thinking]' in rendered else 'teal' if '[Tool' in rendered else 'gray'
-                    print(paint(rendered, color), end='', flush=True)
-                    line_open = not rendered.endswith('\n')
+                    print(styled.feed(rendered), end='', flush=True)
                     output.write(rendered)
                     output.flush()
             return process.wait() or int(failed)
@@ -160,6 +157,8 @@ def run_agent(profile, project, prompt, log, summary=False):
             raise
         finally:
             progress.clear()
+            print(styled.feed('', final=True), end='', flush=True)
+            process.stdout.close()
 
 
 def run_batch(profile, project, count):

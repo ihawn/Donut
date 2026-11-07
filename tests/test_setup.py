@@ -69,6 +69,30 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(saved['aliases']['local-planner']['engine'],'ollama')
         self.assertEqual([call.args[0] for call in calls.call_args_list],[['ollama','list']])
 
+    def test_claude_login_folder_used_for_login_and_execution(self):
+        personal = str((self.root / '.claude-personal').resolve())
+        answers = iter(['claude', 'Custom path', personal, 'y', 'opus', 'n', 'personal'])
+        with patch('builtins.input', side_effect=lambda _: next(answers)), patch('shutil.which', return_value='/bin/claude'), patch('donut.setup.subprocess.run') as login, contextlib.redirect_stdout(io.StringIO()):
+            setup.configure_provider({'aliases': {}})
+            profile = config.load()['aliases']['personal']
+            _, env = providers.command(profile, 'test')
+        self.assertEqual(login.call_args.kwargs['env']['CLAUDE_CONFIG_DIR'], personal)
+        self.assertEqual(env['CLAUDE_CONFIG_DIR'], personal)
+        self.assertEqual(profile['claude_config_dir'], personal)
+
+    def test_existing_aliases_preserved_when_selecting_roles(self):
+        aliases = {'planner': {'engine': 'codex'}, 'fast': {'engine': 'ollama', 'model': 'local'}}
+        config.save({'aliases': aliases, 'planner': 'planner', 'default_model': 'fast'})
+        answers = iter(['1', '', 'n', '2'])
+        with patch('builtins.input', side_effect=lambda _: next(answers)), patch('donut.setup.discover', return_value=(['local'], [])), patch('donut.setup.install'), contextlib.redirect_stdout(io.StringIO()):
+            setup.setup(self.root)
+        self.assertEqual(config.load()['aliases'], aliases)
+        self.assertEqual(config.load()['default_model'], 'fast')
+
+    def test_claude_directory_rejects_wrong_provider_and_invalid_path(self):
+        for profile in ({'engine': 'codex', 'claude_config_dir': '/tmp/x'}, {'engine': 'claude', 'claude_config_dir': ''}, {'engine': 'claude', 'claude_config_dir': 42}):
+            with self.assertRaises(ValueError): providers.validate(profile)
+
     def test_provider_commands_do_not_resume(self):
         for engine in ('codex','claude','ollama'):
             with patch('shutil.which',return_value='/bin/agent'):

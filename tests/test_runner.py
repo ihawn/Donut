@@ -109,10 +109,31 @@ print('finished', p.name)
         self.assertNotIn('[2/all]',result.stdout)
         self.assertEqual(len(runner.tasks(self.project,'to_do')),2)
 
+    def test_reported_model_and_code_stream_reach_terminal_and_plain_log(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        events = [
+            {'type': 'system', 'subtype': 'init', 'model': 'actual-model'},
+            {'type': 'stream_event', 'event': {'type': 'content_block_start', 'content_block': {'type': 'text'}}},
+            {'type': 'stream_event', 'event': {'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': '```py\nreturn 42\n```'}}},
+        ]
+        script = self.root / 'stream.py'
+        script.write_text('import sys\nsys.stdin.read()\n' + '\n'.join('print(' + repr(json.dumps(event)) + ')' for event in events))
+        log = self.root / 'logs' / 'run.log'
+        terminal = io.StringIO()
+        with patch('donut.runner.command', return_value=([sys.executable, str(script)], os.environ.copy())), contextlib.redirect_stdout(terminal):
+            result = runner.run_agent({'engine': 'claude'}, self.project, 'test', log)
+        self.assertEqual(result, 0)
+        self.assertIn('[actual-model]', terminal.getvalue())
+        self.assertIn('return 42', terminal.getvalue())
+        self.assertNotIn('\x1b', log.read_text())
+        self.assertTrue(terminal.getvalue().endswith('```'))
+
     def test_stream_rendering(self):
         import json
         def event(e): return runner.render_event(json.dumps(dict(type='stream_event', event=e)))
-        self.assertIn('[Thinking]', event(dict(type='content_block_start', content_block=dict(type='thinking'))))
+        self.assertIn('Thinking]', event(dict(type='content_block_start', content_block=dict(type='thinking'))))
         self.assertEqual(event(dict(type='content_block_delta', delta=dict(type='thinking_delta', thinking='reason'))),'reason')
         self.assertEqual(event(dict(type='content_block_delta', delta=dict(type='text_delta', text='answer'))),'answer')
         self.assertIn('read_file',event(dict(type='content_block_start',content_block=dict(type='tool_use',name='read_file'))))

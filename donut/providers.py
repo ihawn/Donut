@@ -1,5 +1,6 @@
 """Provider CLIs own authentication and execution; no credentials in config."""
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -14,6 +15,10 @@ def validate(profile):
         raise ValueError('Model must be a string')
     if engine in ('ollama', 'openai') and not profile.get('model'):
         raise ValueError('A model ID is required')
+    if 'claude_config_dir' in profile:
+        directory = profile['claude_config_dir']
+        if engine != 'claude' or not isinstance(directory, str) or not directory.strip() or '\0' in directory:
+            raise ValueError('claude_config_dir must be a nonempty Claude configuration path')
     if engine == 'openai':
         url = urlsplit(profile.get('base_url', ''))
         if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
@@ -28,6 +33,8 @@ def command(profile, prompt, readonly=False):
     validate(profile)
     engine, model = profile['engine'], profile.get('model')
     env = os.environ.copy()
+    if engine == 'claude' and profile.get('claude_config_dir'):
+        env['CLAUDE_CONFIG_DIR'] = str(Path(profile['claude_config_dir']).expanduser().resolve())
     if engine == 'codex':
         args = ['codex', 'exec', '--json', '--ephemeral', '--skip-git-repo-check']
         args += ['--sandbox', 'read-only'] if readonly else (['--dangerously-bypass-approvals-and-sandbox'] if profile.get('auto_approve') else ['--sandbox', 'workspace-write'])
