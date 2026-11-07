@@ -8,7 +8,7 @@ from .ui import banner
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Legacy launcher; prefer donut -m ALIAS --work COUNT.')
+    parser = argparse.ArgumentParser(description='Legacy launcher; prefer donut -m ALIAS --work next COUNT.')
     parser.add_argument('--model', required=True)
     parser.add_argument('-p', '--project', default='.')
     parser.add_argument('build', choices=['build'])

@@ -49,7 +49,7 @@ def plan_session(profile, alias, project, request=None):
             return code
         history.append(request)
         print(paint('\nPLANNING COMPLETE', 'teal'))
-        print('Try exiting the shell and running `donut --work`')
+        print('Try exiting the shell and running `donut --work next 1`')
         if not interactive: return 0
 
 
@@ -62,7 +62,7 @@ def main():
     parser.add_argument('-v', '--version', action='version', version='donut ' + release_version())
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--plan', nargs='?', const='', metavar='REQUEST', help='open interactive planner; optionally plan one quoted request')
-    modes.add_argument('--work', nargs='?', const='all', metavar='COUNT', help='work all eligible tickets, or a positive count, one fresh context each')
+    modes.add_argument('--work', nargs='*', metavar='NEXT_COUNT', help='work next COUNT tickets (for example: --work next 1); bare --work runs all')
     sub = parser.add_subparsers(dest='action')
     init = sub.add_parser('setup', parents=[shared], help='choose local/hosted orchestrator, discover models and set up project')
     init.add_argument('--scan', help='additional directory to scan for model files')
@@ -83,7 +83,15 @@ def main():
         if args.plan is not None:
             args.action, args.request = 'plan', args.plan or None
         else:
-            args.action, args.count = 'do', args.work
+            parts = args.work
+            if len(parts) == 2 and parts[0] == 'next': parts = parts[1:]
+            if not parts:
+                count = 'all'
+            elif len(parts) == 1 and (parts[0] == 'all' or (parts[0].isdecimal() and int(parts[0]) > 0)):
+                count = parts[0]
+            else:
+                parser.error('Use --work next COUNT, where COUNT is a positive integer or all.')
+            args.action, args.count = 'do', count
     if not args.action: parser.error('Choose --plan, --work, or a subcommand such as setup.')
     if args.action == 'welcome':
         welcome(installed=True)

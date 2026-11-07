@@ -56,7 +56,7 @@ def install(project, home):
     additions = [line for line in imports if line[2:] not in text]
     if additions:
         qwen.write_text(text.rstrip() + '\n\n## Swim-lane worker\n\n' + '\n\n'.join(additions) + '\n')
-    print(f'Ready: {project}\nRun donut --plan to write tickets, then donut --work to build them.')
+    print(f'Ready: {project}\nRun donut --plan to write tickets, then donut --work next 1 to build the next ticket.')
 
 
 def main():

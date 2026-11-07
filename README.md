@@ -39,7 +39,7 @@ After [installing](#install), open your project and choose your models:
 ```sh
 donut setup
 donut --plan                     # interactive planner; describe what you want
-donut --work                     # execute all eligible tickets one at a time
+donut --work next 1              # execute one eligible ticket
 ```
 
 `planner` and `worker` are aliases **you choose during setup**, not built-in model names.
@@ -48,7 +48,7 @@ donut --work                     # execute all eligible tickets one at a time
 donut -v                          # installed version (also --version)
 donut models                      # your configured aliases
 donut -m worker --work        # all eligible tickets, one fresh context each
-donut -m worker --work 1 -p ../app # work in another project
+donut -m worker --work next 1 -p ../app # work in another project
 donut -h                          # all commands
 ```
 
@@ -130,16 +130,16 @@ Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.c
 ```sh
 donut --plan                     # interactive session
 donut -m qwen --plan "Add wall jumping"  # local orchestrator
-donut -m qwen-faster --work 3
+donut -m qwen-faster --work next 3
 donut -m qwen --work
-donut -m cloud-worker --work 1 --project ../another-project
+donut -m cloud-worker --work next 1 --project ../another-project
 ```
 
-Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. Its available thinking, tool activity, and answers stream as it works. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. Its available thinking, tool activity, and answers stream as it works. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
 
 Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
 
-`donut --work` processes all eligible tickets, one fresh worker context per ticket. Use `donut --work 3` to limit the run, or `donut --work all` explicitly. The older `donut plan "request"` and `donut do next COUNT` forms remain compatible.
+`donut --work next 1` processes exactly one eligible ticket (or none when no ticket is eligible), then prints the run summary. Use `donut --work next 3` for up to three tickets or `donut --work next all` for all eligible tickets. Each ticket gets a fresh worker context. Bare `donut --work` still runs all eligible tickets, and the shorter `donut --work 3` form remains supported. The older `donut plan "request"` and `donut do next COUNT` forms remain compatible.
 
 `-m` / `--model` accepts a configured alias for either planning or execution. The planner/orchestrator and worker may be the same local model, different local models, or hosted models. Setup stores a default planner separately from the default worker. `-p` / `--project` accepts an absolute or relative directory and defaults to the current directory. Flags work before or after the subcommand. `donut -h` lists commands.
 

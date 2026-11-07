@@ -68,7 +68,7 @@ class CLITests(unittest.TestCase):
         self.assertNotEqual(run.call_args_list[0].args[3], run.call_args_list[1].args[3])
         self.assertFalse(run.call_args.kwargs.get('summary', False))
         self.assertEqual(output.getvalue().count('PLANNING COMPLETE'), 2)
-        self.assertEqual(output.getvalue().count('Try exiting the shell and running `donut --work`'), 2)
+        self.assertEqual(output.getvalue().count('Try exiting the shell and running `donut --work next 1`'), 2)
 
     def test_interactive_planning_streams_thinking_and_writes_tickets(self):
         save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})
@@ -89,13 +89,14 @@ class CLITests(unittest.TestCase):
     def test_new_modes_select_defaults_and_explicit_overrides(self):
         profiles = {'planner': {'engine': 'codex', 'model': 'planning'}, 'worker': {'engine': 'codex', 'model': 'working'}, 'override': {'engine': 'claude', 'model': 'chosen'}}
         save({'aliases': profiles, 'planner': 'planner', 'default_model': 'worker'})
-        cases = [(['--plan'], 'planner', 'plan'), (['--plan', '-m', 'override'], 'override', 'plan'), (['--model', 'override', '--plan'], 'override', 'plan'), (['--work'], 'worker', 'work'), (['--work', '3', '--model', 'override'], 'override', 'work'), (['-m', 'override', '--work', '1'], 'override', 'work')]
+        cases = [(['--plan'], 'planner', 'plan'), (['--plan', '-m', 'override'], 'override', 'plan'), (['--model', 'override', '--plan'], 'override', 'plan'), (['--work'], 'worker', 'work'), (['--work', 'next', '1'], 'worker', 'work'), (['--work', 'next', '3', '-m', 'override'], 'override', 'work'), (['-m', 'override', '--work', 'next', 'all'], 'override', 'work'), (['--work', '3', '--model', 'override'], 'override', 'work'), (['-m', 'override', '--work', '1'], 'override', 'work')]
         for argv, alias, mode in cases:
             with self.subTest(argv=argv), patch('sys.argv', ['donut', *argv, '-p', str(self.root)]), patch('donut.cli.plan_session', return_value=0) as plan, patch('donut.cli.run_batch', return_value=0) as work, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(), 0)
                 called = plan if mode == 'plan' else work
                 self.assertEqual(called.call_args.args[0], profiles[alias])
                 if argv == ['--work']: self.assertEqual(work.call_args.args[2], 'all')
+                if 'next' in argv: self.assertEqual(work.call_args.args[2], argv[argv.index('next') + 1])
 
     def test_planning_failure_does_not_print_completion(self):
         save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})
@@ -110,6 +111,13 @@ class CLITests(unittest.TestCase):
         with patch('sys.argv', ['donut', '--plan', '-p', str(self.root)]), patch('builtins.input', side_effect=EOFError), patch('donut.cli.install'), patch('donut.cli.run_agent') as run, patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root/'state')}), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(), 0)
         run.assert_not_called()
+
+    def test_invalid_next_counts_do_not_launch_worker(self):
+        for values in (['next'], ['next', '0'], ['next', '-1'], ['next', 'many'], ['next', '1', '2']):
+            with self.subTest(values=values), patch('sys.argv', ['donut', '--work', *values]), patch('donut.cli.run_batch') as run, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                main()
+            self.assertEqual(result.exception.code, 2)
+            run.assert_not_called()
 
     def test_conflicting_modes_rejected(self):
         for argv in (['--plan', '--work'], ['--plan', 'hello', 'models'], ['--work', '2', 'setup']):

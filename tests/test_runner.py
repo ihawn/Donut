@@ -51,12 +51,21 @@ print('finished', p.name)
         path.write_text(f'**Slug:** `{slug}`\n**Depends on:** {deps}\n')
         return path
 
-    def run_batch(self, count, *extra):
+    def run_batch(self, count, *extra, new_syntax=False):
         config=self.root/'config/donut'
         config.mkdir(parents=True,exist_ok=True)
         (config/'config.json').write_text(json.dumps({'aliases':{'test':{'engine':'openai','model':'test','base_url':'https://example.com/v1','key_env':'TEST_DONUT_KEY','auto_approve':True}}}))
         self.env.update(XDG_CONFIG_HOME=str(self.root/'config'),XDG_STATE_HOME=str(self.root/'state'),TEST_DONUT_KEY='fixture')
-        return subprocess.run([sys.executable,'-m','donut','--model','test','do','next',count,'-p',str(self.project),*extra],env=self.env,capture_output=True,text=True)
+        mode = ['--work', 'next', count] if new_syntax else ['do', 'next', count]
+        return subprocess.run([sys.executable,'-m','donut','--model','test',*mode,'-p',str(self.project),*extra],env=self.env,capture_output=True,text=True)
+
+    def test_work_next_one_executes_exactly_one_ticket(self):
+        for number in range(1, 4): self.ticket(number, f'task{number}')
+        result = self.run_batch('1', new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([p.name for p in runner.tasks(self.project, 'done')], ['001_task1.md'])
+        self.assertEqual(len(runner.tasks(self.project, 'to_do')), 2)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)  # One worker plus summary.
 
     def test_count_and_unique_sessions(self):
         for n in range(1, 4): self.ticket(n, f'task{n}')
