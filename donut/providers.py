@@ -32,13 +32,13 @@ def command(profile, prompt, readonly=False):
         args = ['codex', 'exec', '--json', '--ephemeral', '--skip-git-repo-check']
         args += ['--sandbox', 'read-only'] if readonly else (['--dangerously-bypass-approvals-and-sandbox'] if profile.get('auto_approve') else ['--sandbox', 'workspace-write'])
         if model: args += ['--model', model]
-        args += [prompt]
+        args += ['-']
     elif engine == 'claude':
         args = ['claude', '--print', '--verbose', '--output-format', 'stream-json',
                 '--include-partial-messages', '--no-session-persistence']
         args += ['--permission-mode', 'plan', '--tools', ''] if readonly else (['--dangerously-skip-permissions'] if profile.get('auto_approve') else ['--permission-mode', 'acceptEdits', '--permission-prompts', 'none'])
         if model: args += ['--model', model]
-        args += [prompt]
+        args += ['Follow the request on stdin.']
     else:
         args = ['qwen', '--auth-type', 'openai', '--model', model, '--output-format',
                 'stream-json', '--include-partial-messages']
@@ -51,7 +51,7 @@ def command(profile, prompt, readonly=False):
             if not key: raise ValueError(f"Set {profile['key_env']} before using this alias (Donut never saves its value).")
             env['OPENAI_API_KEY'] = key
             args += ['--openai-base-url', profile['base_url']]
-        args += ['--prompt', prompt]
+        args += ['--prompt', 'Follow the request on stdin.']
     binary = shutil.which(args[0])
     if not binary: raise ValueError(f'Install {args[0]} before using this alias.')
     args[0] = binary

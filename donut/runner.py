@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Run swim-lane tickets in isolated coding-agent sessions."""
-import fcntl
 import hashlib
 import json
 import os
@@ -11,8 +10,8 @@ import sys
 import tempfile
 import queue
 import threading
-import signal
 from .providers import command, activate
+from .platform import acquire_lock, process_options, stop_process
 from .ui import Progress, paint
 
 
@@ -21,7 +20,7 @@ def tasks(project, lane):
 
 
 def field(path, name):
-    match = re.search(r'^\*\*' + re.escape(name) + r':\*\*\s*(.*)$', path.read_text(), re.M)
+    match = re.search(r'^\*\*' + re.escape(name) + r':\*\*\s*(.*)$', path.read_text(encoding='utf-8'), re.M)
     if not match:
         raise ValueError(f'{path.name}: missing {name} metadata')
     return match[1].strip()
@@ -107,12 +106,19 @@ def run_agent(profile, project, prompt, log, summary=False):
     events = queue.Queue()
     failed = False
     line_open = False
-    with log.open('w') as output, log.with_suffix('.jsonl').open('w') as raw:
+    with log.open('w', encoding='utf-8') as output, log.with_suffix('.jsonl').open('w', encoding='utf-8') as raw:
         os.chmod(log, 0o600)
         os.chmod(log.with_suffix('.jsonl'), 0o600)
-        process = subprocess.Popen(args, cwd=project, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                   start_new_session=True)
+        process = subprocess.Popen(args, cwd=project, env=env, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
+                                   **process_options())
+        def send_prompt():
+            try:
+                process.stdin.write(prompt)
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        threading.Thread(target=send_prompt, daemon=True).start()
         def read():
             try:
                 for line in process.stdout:
@@ -150,12 +156,7 @@ def run_agent(profile, project, prompt, log, summary=False):
                     output.flush()
             return process.wait() or int(failed)
         except KeyboardInterrupt:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            stop_process(process)
             raise
         finally:
             progress.clear()
@@ -169,11 +170,7 @@ def run_batch(profile, project, count):
             raise ValueError(f'{project}: missing swim_lanes/{lane}; run donut init')
     cache = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'donut'
     cache.mkdir(parents=True, exist_ok=True)
-    lock = (cache / (hashlib.sha256(str(project).encode()).hexdigest() + '.lock')).open('w')
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise ValueError('another Donut batch is already running for this project')
+    lock = acquire_lock(cache / (hashlib.sha256(str(project).encode()).hexdigest() + '.lock'))
     run_dir = Path(tempfile.mkdtemp(prefix='run-', dir=cache))
     print(f'Project: {project}\nModel: {profile.get("model") or profile["engine"]}\nRun logs: {run_dir}', flush=True)
     if profile['engine'] == 'ollama': print(paint('Preparing local model…', 'orange'), flush=True)
@@ -199,7 +196,7 @@ def run_batch(profile, project, count):
             locations = [project / 'swim_lanes' / lane / path.name for lane in ('done', 'in_progress', 'to_do')]
             present = [p for p in locations if p.exists()]
             final = present[0] if len(present) == 1 else None
-            notes = final.read_text().split('## Completion notes', 1)[-1][-6000:] if final else 'Ticket missing or duplicated across lanes.'
+            notes = final.read_text(encoding='utf-8').split('## Completion notes', 1)[-1][-6000:] if final else 'Ticket missing or duplicated across lanes.'
             status = 'Done' if code == 0 and final == locations[0] else 'Blocked'
             records.append(dict(task=path.name, status=status, exit_code=code, completion_notes=notes))
             (run_dir / 'results.json').write_text(json.dumps(records, indent=2))

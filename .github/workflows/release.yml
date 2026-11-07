@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -17,22 +17,28 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   package:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Validate version tag
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Select release version
+        id: version
         run: |
-          python - <<'PY'
-          import os, pathlib, tomllib
-          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
-          assert os.environ['RELEASE_TAG'] == f'v{version}', 'Tag must match pyproject.toml version'
+          version=$(python scripts/release_version.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          RELEASE_VERSION="$version" python - <<'PY'
+          import os, pathlib, re
+          path = pathlib.Path('pyproject.toml')
+          text, count = re.subn(r'^version = "[^"\n]+"$', 'version = "' + os.environ['RELEASE_VERSION'] + '"', path.read_text(), count=1, flags=re.M)
+          assert count == 1, 'Expected one package version field'
+          path.write_text(text)
           PY
       - name: Build and validate distributions
         run: |
@@ -61,7 +67,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: package
     runs-on: ubuntu-latest
     permissions:
@@ -75,10 +81,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: v${{ needs.package.outputs.version }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* --clobber
           else
-            gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "Donut $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" dist/* --target "$RELEASE_SHA" --generate-notes --title "Donut $RELEASE_TAG"
           fi

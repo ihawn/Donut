@@ -48,7 +48,7 @@ def install(project, home):
         folder = project / 'swim_lanes' / lane
         folder.mkdir(parents=True, exist_ok=True)
         (folder / '.gitkeep').touch(exist_ok=True)
-    text = qwen.read_text() if qwen.exists() else '# Qwen project instructions\n'
+    text = qwen.read_text(encoding='utf-8') if qwen.exists() else '# Qwen project instructions\n'
     imports = ['@./.qwen/skills/swim-lane-worker/SKILL.md']
     rules = project / 'skills/project-rules/SKILL.md'
     if rules.is_file():

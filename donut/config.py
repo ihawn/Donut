@@ -12,7 +12,7 @@ def config_path():
 
 def load():
     path = config_path()
-    return json.loads(path.read_text()) if path.exists() else {'aliases': {}}
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'aliases': {}}
 
 
 def save(config):

@@ -25,8 +25,9 @@ class BatchTests(unittest.TestCase):
         fake.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, re, sys
 args=sys.argv[1:]
+prompt=sys.stdin.read()
+args[args.index('--prompt')+1]=prompt
 with open(os.environ['CALLS'],'a') as f: f.write(json.dumps(args)+'\\n')
-prompt=args[args.index('--prompt')+1]
 if '--max-tool-calls' in args:
     print('| Task | Status | What changed | Tests | Human check |')
     sys.exit(0)
@@ -40,8 +41,10 @@ with new.open('a') as f: f.write('\\n## Completion notes\\n'+('BLOCKED: test fai
 print('finished', p.name)
 ''')
         fake.chmod(0o755)
+        if os.name == 'nt':
+            (self.bin/'qwen.cmd').write_text('@echo off\n"' + sys.executable + '" "' + str(fake) + '" %*\n')
         self.calls = self.root / 'calls'
-        self.env = dict(os.environ, PATH=str(self.bin)+os.pathsep+os.environ['PATH'], CALLS=str(self.calls), HOME=str(self.root))
+        self.env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1', PATH=str(self.bin)+os.pathsep+os.environ['PATH'], CALLS=str(self.calls), HOME=str(self.root))
 
     def ticket(self, number, slug, deps='None', lane='to_do'):
         path = self.project / 'swim_lanes' / lane / f'{number:03}_{slug}.md'
@@ -89,19 +92,18 @@ print('finished', p.name)
         self.assertFalse(self.calls.exists())
 
     def test_project_lock(self):
-        import fcntl, hashlib
+        import hashlib
         cache=self.root/'state/donut'
         cache.mkdir(parents=True)
-        lock=(cache/(hashlib.sha256(str(self.project.resolve()).encode()).hexdigest()+'.lock')).open('w')
+        lock=runner.acquire_lock(cache/(hashlib.sha256(str(self.project.resolve()).encode()).hexdigest()+'.lock'))
         self.addCleanup(lock.close)
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         self.assertEqual(self.run_batch('1').returncode,1)
         self.assertFalse(self.calls.exists())
 
     def test_process_failure_stops_batch(self):
         self.ticket(1,'first')
         self.ticket(2,'second')
-        (self.bin/'qwen').write_text('#!/bin/sh\nexit 7\n')
+        (self.bin/'qwen').write_text('#!/usr/bin/env python3\nraise SystemExit(7)\n')
         result=self.run_batch('all')
         self.assertEqual(result.returncode,1)
         self.assertNotIn('[2/all]',result.stdout)

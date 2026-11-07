@@ -36,7 +36,7 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn('secret-fixture',config.config_path().read_text())
         self.assertNotIn('secret-fixture',' '.join(args))
         self.assertEqual(env['OPENAI_API_KEY'],'secret-fixture')
-        self.assertEqual(config.config_path().stat().st_mode & 0o777,0o600)
+        if os.name != 'nt': self.assertEqual(config.config_path().stat().st_mode & 0o777,0o600)
         with self.assertRaises(ValueError): config.save({'aliases':{'bad':dict(profile,api_key='secret-fixture')}})
 
     def test_credential_urls_rejected(self):
@@ -75,6 +75,14 @@ class SetupTests(unittest.TestCase):
                 args,_=providers.command({'engine':engine,'model':'x'},'task')
             self.assertNotIn('--resume',args);self.assertNotIn('--continue',args)
             self.assertNotIn('--dangerously-skip-permissions',args)
+
+    def test_multiline_prompts_are_not_put_on_command_line(self):
+        prompt = 'First line\n"quoted" & second line'
+        for engine in ('codex','claude','ollama'):
+            with patch('shutil.which',return_value='/bin/agent'):
+                args,_=providers.command({'engine':engine,'model':'test'},prompt)
+            self.assertNotIn(prompt,args)
+            self.assertTrue(all('\n' not in arg for arg in args))
 
     def test_missing_key_rejected(self):
         with patch.dict(os.environ,{},clear=True):

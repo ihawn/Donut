@@ -1,1 +1,5 @@
 include docs/images/do-the-thing.png
+
+include scripts/release_version.py
+include install.sh
+include install.ps1

@@ -1,23 +1,103 @@
-# ◉ Donut
+<p align="center">
+  <img src="docs/images/do-the-thing.png" width="320" alt="A roughly drawn donut tells a little donut hole: do the thing.">
+</p>
 
-[![Unit tests](https://github.com/ihawn/Donut/actions/workflows/test.yml/badge.svg)](https://github.com/ihawn/Donut/actions/workflows/test.yml)
-[![Release](https://github.com/ihawn/Donut/actions/workflows/release.yml/badge.svg)](https://github.com/ihawn/Donut/actions/workflows/release.yml)
+<h1 align="center">Donut</h1>
+<p align="center"><strong>Small tickets. Fresh contexts. Do the thing.</strong></p>
+<p align="center">Your planning model writes the tickets. Your worker model takes them one at a time.</p>
 
-<img src="docs/images/do-the-thing.png" width="320" alt="A loosely drawn donut tells a small donut hole ‘do the thing.’">
+<p align="center">
+  <a href="https://github.com/ihawn/Donut/actions/workflows/test.yml"><img src="https://github.com/ihawn/Donut/actions/workflows/test.yml/badge.svg" alt="Unit tests and installers"></a>
+  <a href="https://github.com/ihawn/Donut/actions/workflows/release.yml"><img src="https://github.com/ihawn/Donut/actions/workflows/release.yml/badge.svg" alt="Release pipeline"></a>
+  <a href="https://github.com/ihawn/Donut/releases/latest"><img src="https://img.shields.io/github/v/release/ihawn/Donut?style=flat-square&color=17B8BE" alt="Latest release"></a>
+  <a href="https://github.com/ihawn/Donut/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B-124D63?style=flat-square" alt="Python 3.10 and newer"></a>
+</p>
+<p align="center">
+  <a href="#install"><img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFA818?style=flat-square" alt="macOS, Windows and Linux"></a>
+  <a href="https://github.com/ihawn/Donut/stargazers"><img src="https://img.shields.io/github/stars/ihawn/Donut?style=flat-square&color=FF5E4E" alt="GitHub stars"></a>
+  <a href="https://github.com/ihawn/Donut/commits/main"><img src="https://img.shields.io/github/last-commit/ihawn/Donut/main?style=flat-square&color=124D63" alt="Last commit"></a>
+  <a href="https://github.com/ihawn/Donut/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/runtime_dependencies-0-17B8BE?style=flat-square" alt="Zero Python runtime dependencies"></a>
+</p>
 
-Small tickets. Fresh contexts. A local-first command-line wrapper around coding agents.
+<p align="center"><a href="#install">Install</a> · <a href="#quick-start">Quick start</a> · <a href="#how-it-works">How it works</a> · <a href="#setup">Models & setup</a> · <a href="#releases">Releases</a> · <a href="#development--verification">Contribute</a></p>
 
-Donut uses a planning model to write scoped Markdown tickets, then runs each ticket in a new agent process. Workers can be local Ollama models, Claude Code, Codex, or models served through an OpenAI-compatible endpoint (including Grok). There is no bundled model download.
+---
+
+Donut wraps the coding agents you already use. Choose a local or hosted model to plan work, then let a worker execute small, verifiable tickets—each in a **fresh context**. Mix providers, reuse one model for both roles, or keep the whole workflow local.
+
+| 🟠 Plan once | 🟦 Work in small steps | 🟢 See what happened |
+|---|---|---|
+| A planner researches your project and writes scoped tickets. | Each ticket gets its own process, context, tests and completion notes. | Live agent output, loading indicators and a compact run summary. |
+
+**Works with:** Ollama · Qwen Code · Claude Code · Codex · OpenAI-compatible endpoints, including Grok.
+
+## Quick start
+
+After [installing](#install), open your project and choose your models:
+
+```sh
+donut setup
+donut -m planner plan "Add wall jumping with a human feel check"
+donut -m worker do next 3
+```
+
+`planner` and `worker` are aliases **you choose during setup**, not built-in model names.
+
+```sh
+donut models                      # your configured aliases
+donut -m worker do next all        # all eligible tickets, one fresh context each
+donut -m worker do next 1 -p ../app # work in another project
+donut -h                          # all commands
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Your request] --> B[Planner: local or hosted]
+    B --> C[To do: scoped tickets]
+    C --> D[Worker: fresh context]
+    D --> E{Checks pass?}
+    E -->|Yes| F[Done + completion notes]
+    E -->|Blocked| G[Record blocker]
+    F --> C
+    G --> H[Continue independent tickets]
+    H --> C
+    classDef orange fill:#FFA818,color:#124D63,stroke:#124D63
+    classDef teal fill:#17B8BE,color:#124D63,stroke:#124D63
+    classDef coral fill:#FF5E4E,color:#124D63,stroke:#124D63
+    class A,B orange
+    class C,D,E,F teal
+    class G,H coral
+```
+
+> **You stay in control.** Model aliases and credentials stay outside the repo. Existing project instructions are preserved. A failed or blocked task is reported; subjective acceptance checks stay yours to verify.
 
 ## Install
 
-Requires Python 3.10+ on macOS/Linux. Install the provider CLI(s) you intend to use: Qwen Code for Ollama and compatible endpoints, Claude Code for Claude, or Codex for OpenAI. Local inference also requires a running Ollama server. Donut does not silently install these tools.
+Install the latest GitHub Release with curl. The installers use [uv](https://docs.astral.sh/uv/getting-started/installation/) to install Donut and Python 3.13 in an isolated environment; no preinstalled Python or Git is required.
+
+**macOS / Linux**
 
 ```sh
-pipx install git+https://github.com/ihawn/Donut.git
+curl -fsSL https://raw.githubusercontent.com/ihawn/Donut/main/install.sh | sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/ihawn/Donut/main/install.ps1 -o "$env:TEMP\donut-install.ps1"
+if ($LASTEXITCODE -eq 0) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\donut-install.ps1" }
+```
+
+Open a new terminal after installation:
+
+```sh
 cd your-project
 donut setup
 ```
+
+Run the installer again to update to the latest release. Install the provider CLI(s) you intend to use: Qwen Code for Ollama and compatible endpoints, Claude Code for Claude, or Codex for OpenAI. Local inference also requires a running Ollama server. Donut does not silently install provider tools or models.
 
 For development: `python3 -m venv .venv`, `.venv/bin/pip install -e .`, then `.venv/bin/donut`.
 
@@ -85,19 +165,18 @@ python3 -m donut --help
 
 Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, process errors, locking, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction.
 
-This first release supports macOS/Linux. Windows process groups and file locking are not implemented. No remote accounts, API keys, user configuration, or run logs belong in this repository.
+macOS, Windows and Linux are supported and tested in CI, including the shell/PowerShell installers. No remote accounts, API keys, user configuration, or run logs belong in this repository.
 
 ## Releases
 
-The [Release workflow](https://github.com/ihawn/Donut/actions/workflows/release.yml) runs the complete macOS/Linux unit-test matrix, builds a wheel and source distribution, checks package metadata, and smoke-tests the installed wheel in a clean directory (including the bundled skills).
+The [Release workflow](https://github.com/ihawn/Donut/actions/workflows/release.yml) runs the complete macOS/Windows/Linux unit-test and installer matrix, builds a wheel and source distribution, checks package metadata, and smoke-tests the installed wheel in a clean directory (including the bundled skills).
 
-Run it manually from GitHub Actions to validate and download build artifacts without publishing. To publish a GitHub Release, set `version` in `pyproject.toml`, commit it, and push the matching tag:
+Every merge into `main` triggers this pipeline and publishes a GitHub Release after the checks pass. Direct pushes to `main` also trigger it. Pull requests run unit tests without publishing. Manual workflow runs validate and produce downloadable artifacts without publishing.
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
+The first release uses `version` in `pyproject.toml`. Subsequent releases automatically increment the highest stable release's patch version. To start a new minor or major series, raise the version in `pyproject.toml` in your PR; it serves as the minimum release version. CI stamps the selected version into the built packages without making a bot commit to the repository. Re-running an already tagged commit reuses its version.
 
-The tag must exactly match the package version. Successful tagged runs publish the wheel, source distribution and `SHA256SUMS` using GitHub's built-in token; no additional release secret is needed. Re-running the same tag updates its release assets. This publishes to GitHub Releases, not PyPI.
+Successful main runs create the version tag and publish the wheel, source distribution and `SHA256SUMS` using GitHub's built-in token; no additional release secret is needed. Re-running the same release updates its assets. This publishes to GitHub Releases, not PyPI.
 
 The README graphic is a deliberately rough black-and-white donut doodle, without faces or frosting.
+
+Installer CI uses `DONUT_INSTALL_SOURCE` to test the just-built wheel before a release exists; normal installations resolve the latest public GitHub Release.
