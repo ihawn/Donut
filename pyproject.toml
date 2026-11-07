@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "donut-cli"
+version = "0.1.0"
+description = "Fresh-context coding agents, one swim-lane ticket at a time"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+donut = "donut.cli:main"
+
+[tool.setuptools.package-data]
+donut = ["skills/*/SKILL.md"]
