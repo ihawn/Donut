@@ -4,7 +4,6 @@
 
 <h1 align="center">Donut</h1>
 <p align="center"><strong>Your planning model writes the tickets. Your worker model takes them one at a time. Do the thing.</strong></p>
-<p align="center">Your planning model writes the tickets. Your worker model takes them one at a time.</p>
 
 <p align="center">
   <a href="https://github.com/ihawn/Donut/actions/workflows/test.yml"><img src="https://github.com/ihawn/Donut/actions/workflows/test.yml/badge.svg" alt="Unit tests and installers"></a>
