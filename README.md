@@ -90,6 +90,8 @@ curl.exe -fsSL https://raw.githubusercontent.com/ihawn/Donut/main/install.ps1 -o
 if ($LASTEXITCODE -eq 0) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\donut-install.ps1" }
 ```
 
+Installation finishes with the ASCII donut welcome screen, installed version and next steps. The same logo appears during setup. Preview it anytime with `donut welcome`.
+
 Open a new terminal after installation:
 
 ```sh

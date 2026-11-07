@@ -2,9 +2,26 @@
 import os
 import sys
 import time
+from importlib.metadata import PackageNotFoundError, version
 
 COLORS = {'orange': (255, 168, 24), 'navy': (18, 77, 99),
           'coral': (255, 94, 78), 'teal': (23, 184, 190), 'gray': (222, 224, 228)}
+
+
+LOGO = r'''          .----------------.
+          |  do the thing  |
+          '----.  .--------'
+                \/
+       .-""""-.
+     .'        '.
+    /    .--.    \
+   ;    /    \    ;
+   |    \    /    |       .-""-.
+   ;     '--'     ;      /      \
+    \            /       \      /
+     '.        .'         '-..-'
+       '-....-'
+'''
 
 
 def paint(text, color='teal'):
@@ -17,6 +34,25 @@ def paint(text, color='teal'):
 def banner():
     print(paint(' ◉ ', 'orange') + paint('DONUT', 'teal') + paint('  small tickets · fresh contexts', 'gray'))
     print(''.join(paint('━' * 7, color) for color in COLORS))
+
+
+def welcome(installed=False):
+    try:
+        release = version('donut-cli')
+    except PackageNotFoundError:
+        release = 'dev'
+    print(LOGO)
+    print(paint('  DONUT', 'teal') + paint('  /  ' + release, 'orange'))
+    print('  Small tickets. Fresh contexts.')
+    print(paint('  ' + '-' * 38, 'gray'))
+    if installed:
+        print(paint('  [OK] Installation complete.', 'teal'))
+        print('  Open a new terminal in your project, then:')
+        print(paint('    donut setup', 'orange'))
+        print('  Explore commands: donut --help')
+    else:
+        print(paint('  SETUP  /  Local or hosted. Your choice.', 'teal'))
+    print()
 
 
 class Progress:

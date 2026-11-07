@@ -25,4 +25,9 @@ print(wheels[0])
 fi
 uv tool install --force --python 3.13 "$source"
 if [ "${CI:-}" != true ]; then uv tool update-shell; fi
-printf '\nDonut installed. Open a new terminal, then run: donut setup\n'
+bin_dir=$(uv tool dir --bin)
+if "$bin_dir/donut" --help | grep -q 'welcome'; then
+  "$bin_dir/donut" welcome
+else
+  printf '\nDonut installed. Open a new terminal, then run: donut setup\n'
+fi

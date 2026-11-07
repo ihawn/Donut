@@ -9,7 +9,7 @@ from .install_skills import install
 from .providers import validate, activate
 from .runner import run_agent, run_batch
 from .setup import setup, discover
-from .ui import banner
+from .ui import banner, welcome
 
 
 def main():
@@ -21,6 +21,7 @@ def main():
     sub = parser.add_subparsers(dest='action', required=True)
     init = sub.add_parser('setup', parents=[shared], help='choose local/hosted orchestrator, discover models and set up project')
     init.add_argument('--scan', help='additional directory to scan for model files')
+    sub.add_parser('welcome', help='show the installation welcome screen')
     sub.add_parser('models', parents=[shared], help='list configured aliases')
     scan = sub.add_parser('discover', parents=[shared], help='find Ollama models and GGUF/Safetensors files')
     scan.add_argument('--scan', help='directory to scan instead of common model folders')
@@ -32,6 +33,9 @@ def main():
     plan = sub.add_parser('plan', parents=[shared], help='ask the planning agent to research and write tickets')
     plan.add_argument('request', help='quoted description of the work to plan')
     args = parser.parse_args()
+    if args.action == 'welcome':
+        welcome(installed=True)
+        return 0
     project = Path(getattr(args, 'project', '.')).expanduser().resolve()
     try:
         if not project.is_dir(): raise ValueError(f'Project directory does not exist: {project}')

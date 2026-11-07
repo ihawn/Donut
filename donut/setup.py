@@ -7,7 +7,7 @@ import tempfile
 from .config import load, save
 from .install_skills import install
 from .providers import validate
-from .ui import banner, paint
+from .ui import welcome, paint
 
 
 def ask(label, default=''):
@@ -94,7 +94,7 @@ def configure_provider(config):
 
 
 def setup(project, root=None):
-    banner()
+    welcome()
     print('Choose a local or hosted orchestrator to plan tickets. Cloud login is optional.')
     config = load()
     configure_provider(config)

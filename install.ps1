@@ -21,4 +21,14 @@ if ($env:CI -ne 'true') {
     & uv tool update-shell
     if ($LASTEXITCODE -ne 0) { throw 'Could not update PATH; add the uv tool bin directory manually.' }
 }
-Write-Host "`nDonut installed. Open a new terminal, then run: donut setup"
+$binDir = (& uv tool dir --bin).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not locate the installed Donut executable.' }
+$donut = Join-Path $binDir 'donut.exe'
+$helpText = & $donut --help
+if ($LASTEXITCODE -ne 0) { throw 'Donut installed but could not start.' }
+if ($helpText -match '\bwelcome\b') {
+    & $donut welcome
+    if ($LASTEXITCODE -ne 0) { throw 'Could not display the welcome screen.' }
+} else {
+    Write-Host "`nDonut installed. Open a new terminal, then run: donut setup"
+}
