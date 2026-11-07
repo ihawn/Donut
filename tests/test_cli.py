@@ -68,7 +68,7 @@ class CLITests(unittest.TestCase):
         self.assertNotEqual(run.call_args_list[0].args[3], run.call_args_list[1].args[3])
         self.assertFalse(run.call_args.kwargs.get('summary', False))
         self.assertEqual(output.getvalue().count('PLANNING COMPLETE'), 2)
-        self.assertEqual(output.getvalue().count('Try running `donut --work`'), 2)
+        self.assertEqual(output.getvalue().count('Try exiting the shell and running `donut --work`'), 2)
 
     def test_interactive_planning_streams_thinking_and_writes_tickets(self):
         save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})

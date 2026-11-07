@@ -49,7 +49,7 @@ def plan_session(profile, alias, project, request=None):
             return code
         history.append(request)
         print(paint('\nPLANNING COMPLETE', 'teal'))
-        print('Try running `donut --work`')
+        print('Try exiting the shell and running `donut --work`')
         if not interactive: return 0
 
 

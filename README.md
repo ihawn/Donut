@@ -135,7 +135,7 @@ donut -m qwen --work
 donut -m cloud-worker --work 1 --project ../another-project
 ```
 
-Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. Its available thinking, tool activity, and answers stream as it works. After each successful prompt it prints **PLANNING COMPLETE** and **Try running `donut --work`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. Its available thinking, tool activity, and answers stream as it works. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
 
 Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
 
