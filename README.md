@@ -23,7 +23,9 @@
 
 ---
 
-Donut wraps the coding agents you already use. Choose a local or hosted model to plan work, then let a worker execute small, verifiable tickets—each in a **fresh context**. Mix providers, reuse one model for both roles, or keep the whole workflow local.
+Donut is built primarily for **a smarter model orchestrating a less capable local model through hyper-focused tasks**. The planner researches your code and turns the work into small tickets with exact files, clear boundaries and verifiable checks. The local worker tackles one ticket at a time in a **fresh context**, so it can focus on a manageable job without carrying the whole project in its context window.
+
+Donut wraps the coding agents you already use. Mix providers, use one model for both roles, or keep the entire workflow local; the primary workflow pairs a stronger planner with a smaller local worker.
 
 | 🟠 Plan once | 🟦 Work in small steps | 🟢 See what happened |
 |---|---|---|
@@ -44,6 +46,7 @@ donut -m worker do next 3
 `planner` and `worker` are aliases **you choose during setup**, not built-in model names.
 
 ```sh
+donut -v                          # installed version (also --version)
 donut models                      # your configured aliases
 donut -m worker do next all        # all eligible tickets, one fresh context each
 donut -m worker do next 1 -p ../app # work in another project
@@ -99,7 +102,7 @@ cd your-project
 donut setup
 ```
 
-Run the installer again to update to the latest release. Install the provider CLI(s) you intend to use: Qwen Code for Ollama and compatible endpoints, Claude Code for Claude, or Codex for OpenAI. Local inference also requires a running Ollama server. Donut does not silently install provider tools or models.
+Run the same installer again to upgrade to the latest release; your aliases and settings are preserved. Check the installed version with `donut -v`. Install the provider CLI(s) you intend to use: Qwen Code for Ollama and compatible endpoints, Claude Code for Claude, or Codex for OpenAI. Local inference also requires a running Ollama server. Donut does not silently install provider tools or models.
 
 For development: `python3 -m venv .venv`, `.venv/bin/pip install -e .`, then `.venv/bin/donut`.
 
@@ -121,7 +124,7 @@ donut discover --scan /path/to/models
 donut setup -p ../another-project
 ```
 
-Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.config/donut/config.json`, mode 0600). It contains aliases and **environment variable names**, never API key values. Provider CLIs own their own OAuth credentials. Claude setup explicitly selects its login/configuration folder (for example `~/.claude` or `~/.claude-personal`); that folder is used for both login and execution. Shell aliases such as `claude-personal` are not executed, and naming a Donut alias does not select an account. Subscription login and API billing are different; Grok uses API authentication here, not a browser-chat subscription.
+Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.config/donut/config.json`, mode 0600). It contains aliases and **environment variable names**, never API key values. Provider CLIs own their own OAuth credentials. Claude setup explicitly selects its login/configuration folder (for example `~/.claude` or `~/.claude-personal`); that folder is used for both login and execution. Setup also offers simple shell aliases from `.zshrc`, `.bashrc`, and `.bash_profile`, including `claude-personal` defined with `CLAUDE_CONFIG_DIR`. Selecting one imports its login folder without executing shell startup code. Existing Donut aliases take precedence. Shell functions, aliases with extra flags or commands, and dynamically constructed paths are not imported; use the provider/login-folder choices for those. Naming a new Donut alias alone does not select an account. Subscription login and API billing are different; Grok uses API authentication here, not a browser-chat subscription.
 
 ## Plan and build
 
@@ -152,7 +155,7 @@ Donut uses an orange/navy/coral/teal/gray palette, a loading spinner while the a
 
 The legacy `qwen build next …` and `qwen-faster build next …` batch entry point can also use this runner through the installed `qwen-build-next` compatibility command.
 
-Streamed output labels identify the configured model (or the provider-reported model when available). Fenced code and inline snippets are highlighted using the Donut palette; code lines are buffered across token chunks for consistent coloring. `NO_COLOR` and redirected output remain plain, as do saved logs. The lightweight highlighter handles common tokens rather than full language grammars.
+Streamed output labels identify the configured model (or the provider-reported model when available). Fenced code and inline snippets are highlighted using the Donut palette. In thinking and prose, backtick snippets are orange, numbers are coral, parentheses/braces are teal, and error messages are coral/red; code lines are buffered across token chunks for consistent coloring. `NO_COLOR` and redirected output remain plain, as do saved logs. The lightweight highlighter handles common tokens rather than full language grammars.
 
 The final summary is a compact Task / Result / Note table covering only tickets attempted during this run. It hides summary reasoning and excludes untouched queue entries. It is produced by another fresh agent context using completion notes. Donut checks lane transitions, not the truth of model-authored tests. Human checks remain human checks. Codex's summary context is read-only; Claude disables tools and Qwen sets its tool-call budget to zero.
 

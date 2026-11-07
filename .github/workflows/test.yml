@@ -59,3 +59,8 @@ jobs:
           ./install.ps1
           & "$env:UV_TOOL_BIN_DIR/donut.exe" --help
           if ($LASTEXITCODE -ne 0) { throw 'Installed CLI smoke test failed' }
+      - name: Verify reinstall upgrades and preserves configuration
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/donut-tools
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/donut-bin
+        run: python scripts/check_installer_upgrade.py

@@ -9,7 +9,7 @@ from .install_skills import install
 from .providers import validate, activate
 from .runner import run_agent, run_batch
 from .setup import setup, discover
-from .ui import banner, welcome
+from .ui import banner, welcome, release_version, paint
 
 
 def main():
@@ -18,6 +18,7 @@ def main():
     shared.add_argument('-m', '--model', default=argparse.SUPPRESS, help='configured model alias')
     shared.add_argument('-p', '--project', default=argparse.SUPPRESS, help='project path (default: current directory)')
     parser = argparse.ArgumentParser(prog='donut', parents=[shared], description='Small tickets. Fresh contexts. Local or hosted coding agents.')
+    parser.add_argument('-v', '--version', action='version', version='donut ' + release_version())
     sub = parser.add_subparsers(dest='action', required=True)
     init = sub.add_parser('setup', parents=[shared], help='choose local/hosted orchestrator, discover models and set up project')
     init.add_argument('--scan', help='additional directory to scan for model files')
@@ -77,4 +78,4 @@ def main():
     except KeyboardInterrupt:
         print('\nCancelled.', file=sys.stderr); return 130
     except (ValueError, OSError, subprocess.SubprocessError) as error:
-        print(f'donut: {error}', file=sys.stderr); return 1
+        print(paint(f'donut: {error}', 'coral'), file=sys.stderr); return 1

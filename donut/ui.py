@@ -36,11 +36,16 @@ def banner():
     print(''.join(paint('━' * 7, color) for color in COLORS))
 
 
-def welcome(installed=False):
+def release_version():
     try:
         release = version('donut-cli')
     except PackageNotFoundError:
         release = 'dev'
+    return release
+
+
+def welcome(installed=False):
+    release = release_version()
     print(LOGO)
     print(paint('  DONUT', 'teal') + paint('  /  ' + release, 'orange'))
     print('  Small tickets. Fresh contexts.')
@@ -85,6 +90,7 @@ class CodeStream:
     def __init__(self):
         self.pending = ''
         self.fence = None
+        self.error = False
 
     def feed(self, text, final=False):
         import re
@@ -95,7 +101,11 @@ class CodeStream:
             if not end: end = min(len(self.pending), 4096)
             line, self.pending = self.pending[:end], self.pending[end:]
             marker = re.match(r'^\s*(`{3,}|~{3,})', line)
-            if marker:
+            if not line.strip() or re.match(r'^\[.*\]\s*$', line): self.error = False
+            if re.match(r'^\s*(?:\[Error\b|Error:|ERROR\b|Traceback \()', line): self.error = True
+            if self.error:
+                output.append(paint(line, 'coral'))
+            elif marker:
                 delimiter = marker[1]
                 if self.fence is None: self.fence = delimiter
                 elif delimiter[0] == self.fence[0] and len(delimiter) >= len(self.fence): self.fence = None
@@ -109,6 +119,10 @@ class CodeStream:
                         color = 'teal' if token.startswith(('"', "'")) else 'orange' if token[:1].isdigit() else 'teal' if token.startswith(('//', '#')) else 'coral'
                     output.append(paint(token, color))
             else:
-                output.append(''.join(paint(part, 'orange' if i % 2 else 'teal' if part.startswith('[') else 'gray')
-                                      for i, part in enumerate(re.split(r'(`[^`\n]+`)', line))))
+                parts = re.split(r'(`[^`\n]+`|\([^()\n]*\)|\{[^{}\n]*\}|[(){}]|(?<!\w)-?\d+(?:\.\d+)?\b)', line)
+                for index, part in enumerate(parts):
+                    color = 'teal' if part.startswith('[') else 'gray'
+                    if index % 2:
+                        color = 'orange' if part.startswith('`') else 'teal' if part[:1] in '(){}' else 'coral'
+                    output.append(paint(part, color))
         return ''.join(output)

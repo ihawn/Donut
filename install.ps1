@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-Write-Host 'Installing Donut...'
+Write-Host 'Installing or upgrading Donut...'
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'uv installation failed' }
@@ -15,7 +15,7 @@ if (-not $source) {
     if ($wheels.Count -ne 1) { throw 'Expected one Donut wheel in the latest release' }
     $source = $wheels[0].browser_download_url
 }
-& uv tool install --force --python 3.13 $source
+& uv tool install --upgrade --force --python 3.13 $source
 if ($LASTEXITCODE -ne 0) { throw 'Donut installation failed' }
 if ($env:CI -ne 'true') {
     & uv tool update-shell

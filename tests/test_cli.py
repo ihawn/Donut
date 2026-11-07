@@ -21,6 +21,15 @@ class CLITests(unittest.TestCase):
         self.addCleanup(env.stop)
         save({'aliases': {'worker': {'engine': 'codex', 'model': ''}}})
 
+    def test_version_flags_need_no_project_or_config(self):
+        for flag in ('-v', '--version'):
+            output = io.StringIO()
+            with patch('sys.argv', ['donut', flag]), patch('donut.cli.release_version', return_value='1.2.3'), patch('donut.cli.load') as load, contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as result:
+                main()
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual(output.getvalue(), 'donut 1.2.3\n')
+            load.assert_not_called()
+
     def test_model_and_project_flags_before_or_after_command(self):
         variants = [
             ['donut', '-m', 'worker', '-p', str(self.root), 'do', 'next', '3'],

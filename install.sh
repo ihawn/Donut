@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-printf 'Installing Donut…\n'
+printf 'Installing or upgrading Donut…\n'
 if ! command -v uv >/dev/null 2>&1; then
   curl -fsSL https://astral.sh/uv/install.sh | sh
   PATH="$HOME/.local/bin:$PATH"
@@ -23,7 +23,7 @@ if len(wheels) != 1: raise SystemExit("Expected one Donut wheel in the latest re
 print(wheels[0])
 ' "$metadata")
 fi
-uv tool install --force --python 3.13 "$source"
+uv tool install --upgrade --force --python 3.13 "$source"
 if [ "${CI:-}" != true ]; then uv tool update-shell; fi
 bin_dir=$(uv tool dir --bin)
 if "$bin_dir/donut" --help | grep -q 'welcome'; then

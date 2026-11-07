@@ -91,7 +91,7 @@ def render_event(line, show_thinking=True, model="Agent"):
         content = item.get('message', {}).get('content', [])
         if isinstance(content, list):
             results = [b for b in content if isinstance(b, dict) and b.get('type') == 'tool_result']
-            return ''.join('\n[Tool result]\n' + (b['content'] if isinstance(b.get('content'), str)
+            return ''.join(('\n[Error · Tool result]\n' if b.get('is_error') else '\n[Tool result]\n') + (b['content'] if isinstance(b.get('content'), str)
                            else json.dumps(b.get('content'), ensure_ascii=False)) + '\n' for b in results)
     if item.get('type') == 'result' and item.get('is_error'):
         return '\n[Error] ' + json.dumps(item, ensure_ascii=False) + '\n'
@@ -230,5 +230,5 @@ def run_batch(profile, project, count):
         print(f'\nInterrupted; no next task started. Logs: {run_dir}', file=sys.stderr)
         return 130
     except (ValueError, OSError) as error:
-        print(f'Error: {error}\nLogs: {run_dir}', file=sys.stderr)
+        print(paint(f'Error: {error}\nLogs: {run_dir}', 'coral'), file=sys.stderr)
         return 1

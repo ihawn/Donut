@@ -66,6 +66,30 @@ class UITests(unittest.TestCase):
             output = renderer.feed('```cs\nreturn 1;') + renderer.feed('', final=True)
         self.assertEqual(output, '```cs\nreturn 1;')
 
+    def test_thinking_tokens_and_errors_use_palette(self):
+        stream = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(stream), patch.object(stream, 'isatty', return_value=True):
+            renderer = CodeStream()
+            output = renderer.feed('Use `file.py` with 42 (optional) {value}\n[Error] Failed 3 tests\n')
+        self.assertIn('38;2;255;168;24m`file.py`', output)
+        self.assertIn('38;2;255;94;78m42', output)
+        self.assertIn('38;2;23;184;190m(optional)', output)
+        self.assertIn('38;2;23;184;190m{value}', output)
+        self.assertIn('38;2;255;94;78m[Error] Failed 3 tests', output)
+        import re
+        self.assertEqual(re.sub(r'\x1b\[[0-9;]*m', '', output), 'Use `file.py` with 42 (optional) {value}\n[Error] Failed 3 tests\n')
+
+    def test_multiline_error_body_stays_red_until_next_section(self):
+        stream = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(stream), patch.object(stream, 'isatty', return_value=True):
+            output = CodeStream().feed('[Error · Tool result]\nCommand failed\n[model]\nRetrying\n')
+        self.assertIn('38;2;255;94;78mCommand failed', output)
+        self.assertNotIn('38;2;255;94;78mRetrying', output)
+
+    def test_tool_errors_are_labeled_as_errors(self):
+        event = {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'is_error': True, 'content': 'Failed'}]}}
+        self.assertIn('[Error', render_event(json.dumps(event)))
+
     def test_model_labels(self):
         event = {'type': 'stream_event', 'event': {'type': 'content_block_start', 'content_block': {'type': 'text', 'text': 'Hello'}}}
         rendered = render_event(json.dumps(event), model='qwen3.8:27b')

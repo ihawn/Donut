@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +29,39 @@ def choose(label, options, default=None):
             return options[int(value) - 1]
         if value in options: return value
         print(paint('Choose one of the listed options.', 'coral'))
+
+
+def shell_aliases(home=None):
+    """Import simple provider aliases without sourcing or executing shell code."""
+    home = Path(home) if home else Path.home()
+    aliases = {}
+    for filename in ('.bash_profile', '.bashrc', '.zshrc'):
+        path = home / filename
+        if not path.is_file(): continue
+        for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+            if not re.match(r'^\s*alias\s+', line): continue
+            try:
+                declaration = shlex.split(line, comments=True)
+                if len(declaration) != 2: continue
+                name, value = declaration[1].split('=', 1)
+                if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', name): continue
+                words = shlex.split(value)
+                if words[:1] == ['env']: words = words[1:]
+                directory = None
+                if words and words[0].startswith('CLAUDE_CONFIG_DIR='):
+                    directory = words.pop(0).split('=', 1)[1]
+                if len(words) != 1 or words[0] not in ('claude', 'codex'): continue
+                if directory is not None and words[0] != 'claude': continue
+                profile = {'engine': words[0], 'model': ''}
+                if directory is not None:
+                    directory = directory.replace('${HOME}', str(home)).replace('$HOME', str(home))
+                    if directory.startswith('~/'): directory = str(home / directory[2:])
+                    if not directory or any(c in directory for c in '$`\n\0') or not Path(directory).is_absolute(): continue
+                    profile['claude_config_dir'] = str(Path(directory).resolve())
+                aliases[name] = profile
+            except ValueError:
+                continue
+    return aliases
 
 
 def claude_directory():
@@ -77,8 +111,8 @@ def add_alias(config, profile, suggested=''):
         return alias
 
 
-def configure_provider(config):
-    engine = choose('Provider', ['codex', 'claude', 'ollama', 'grok', 'openai'], 'codex')
+def configure_provider(config, preset=None, suggested=None):
+    engine = preset["engine"] if preset else choose('Provider', ['codex', 'claude', 'ollama', 'grok', 'openai'], 'codex')
     if engine == 'ollama':
         for binary in ('ollama', 'qwen'):
             if not shutil.which(binary): raise ValueError(f'Install {binary} to use a local orchestrator.')
@@ -90,7 +124,8 @@ def configure_provider(config):
         profile = {'engine': 'ollama', 'model': model}
     elif engine in ('codex', 'claude'):
         if not shutil.which(engine): raise ValueError(f'Install {engine}, then rerun donut setup.')
-        directory = claude_directory() if engine == 'claude' else None
+        directory = (preset.get('claude_config_dir') if preset else None) or (claude_directory() if engine == 'claude' else None)
+        if directory: print('  Claude login folder: ' + directory)
         login_env = os.environ.copy()
         if directory: login_env['CLAUDE_CONFIG_DIR'] = directory
         print(f'  Executable: {shutil.which(engine)}')
@@ -113,7 +148,7 @@ def configure_provider(config):
         raise ValueError('Choose ollama, codex, claude, grok, or openai.')
     profile['auto_approve'] = yes('Allow this agent to run tools without approval in projects you select?')
     print('  An alias is a nickname for these settings; it does not change your account.')
-    alias = add_alias(config, profile, engine)
+    alias = add_alias(config, profile, suggested or engine)
     if alias:
         config['planner'] = alias
         config.setdefault('default_model', alias)
@@ -126,9 +161,12 @@ def setup(project, root=None):
     print('  One model can do both jobs. Existing aliases are kept unless you replace them.')
     print(paint('\n  1 / 3  CHOOSE YOUR PLANNER\n  ' + '─' * 42, 'teal'))
     config = load()
-    if config['aliases']:
-        selected = choose('Planner alias', list(config['aliases']) + ['Add new provider'], config.get('planner') or 'Add new provider')
+    discovered = {name: profile for name, profile in shell_aliases().items() if name not in config['aliases']}
+    if config['aliases'] or discovered:
+        if discovered: print('  Shell aliases found: ' + ', '.join(discovered))
+        selected = choose('Planner alias', list(config['aliases']) + list(discovered) + ['Add new provider'], config.get('planner') or 'Add new provider')
         if selected == 'Add new provider': configure_provider(config)
+        elif selected in discovered: configure_provider(config, discovered[selected], selected)
         else: config['planner'] = selected
     else:
         configure_provider(config)
