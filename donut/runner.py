@@ -13,6 +13,7 @@ import threading
 from .providers import command, activate
 from .platform import acquire_lock, process_options, stop_process
 from .ui import Progress, paint, CodeStream
+from .planner_output import PlannerOutput
 
 
 def tasks(project, lane):
@@ -98,12 +99,13 @@ def render_event(line, show_thinking=True, model="Agent"):
     return ''
 
 
-def run_agent(profile, project, prompt, log, summary=False):
+def run_agent(profile, project, prompt, log, summary=False, planner=False):
     args, env = command(profile, prompt, readonly=summary)
     log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(log.parent, 0o700)
     progress = Progress()
     styled = CodeStream()
+    presentation = PlannerOutput(progress) if planner else None
     model = profile.get("model") or profile["engine"] + " (provider default)"
     events = queue.Queue()
     failed = False
@@ -132,9 +134,10 @@ def run_agent(profile, project, prompt, log, summary=False):
                 try:
                     line = events.get(timeout=0.2)
                 except queue.Empty:
-                    progress.tick()
+                    if presentation: presentation.tick()
+                    else: progress.tick()
                     continue
-                progress.clear()
+                if not presentation: progress.clear()
                 if line is None: break
                 raw.write(line)
                 raw.flush()
@@ -148,16 +151,18 @@ def run_agent(profile, project, prompt, log, summary=False):
                     pass
                 rendered = render_event(line, show_thinking=not summary, model=model)
                 if rendered:
-                    print(styled.feed(rendered), end='', flush=True)
+                    if not presentation: print(styled.feed(rendered), end='', flush=True)
                     output.write(rendered)
                     output.flush()
+                if presentation: presentation.feed(line)
             return process.wait() or int(failed)
         except KeyboardInterrupt:
             stop_process(process)
             raise
         finally:
             progress.clear()
-            print(styled.feed('', final=True), end='', flush=True)
+            if presentation: presentation.finish(process.returncode == 0 and not failed)
+            else: print(styled.feed('', final=True), end='', flush=True)
             process.stdout.close()
 
 

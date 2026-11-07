@@ -67,10 +67,11 @@ class CLITests(unittest.TestCase):
         self.assertIn('001.log', second)
         self.assertNotEqual(run.call_args_list[0].args[3], run.call_args_list[1].args[3])
         self.assertFalse(run.call_args.kwargs.get('summary', False))
+        self.assertTrue(run.call_args.kwargs['planner'])
         self.assertEqual(output.getvalue().count('PLANNING COMPLETE'), 2)
         self.assertEqual(output.getvalue().count('Try exiting the shell and running `donut --work next 1`'), 2)
 
-    def test_interactive_planning_streams_thinking_and_writes_tickets(self):
+    def test_interactive_planning_hides_thinking_and_lists_created_tickets(self):
         save({'aliases': {'planner': {'engine': 'codex'}}, 'planner': 'planner'})
         script = self.root/'fake_planner.py'
         script.write_text("import sys, json\nfrom pathlib import Path\nprompt = sys.stdin.read()\n"
@@ -82,7 +83,12 @@ class CLITests(unittest.TestCase):
         with patch('sys.argv', ['donut', '--plan', '-p', str(self.root)]), patch('builtins.input', side_effect=['Plan a menu', '/exit']), patch('donut.runner.command', return_value=([sys.executable, str(script)], os.environ.copy())), patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root/'state')}), contextlib.redirect_stdout(output):
             self.assertEqual(main(), 0)
         self.assertTrue((self.root/'swim_lanes/to_do/001_menu.md').is_file())
-        self.assertIn('Checking menu scope', output.getvalue())
+        self.assertNotIn('Checking menu scope', output.getvalue())
+        logs = list((self.root/'state').glob('donut/plan-*/001.log'))
+        self.assertEqual(len(logs), 1)
+        self.assertIn('Checking menu scope', logs[0].read_text())
+        self.assertIn('Tickets created: 1', output.getvalue())
+        self.assertIn('swim_lanes/to_do/001_menu.md', output.getvalue())
         self.assertIn('Created the menu ticket', output.getvalue())
         self.assertIn('PLANNING COMPLETE', output.getvalue())
 

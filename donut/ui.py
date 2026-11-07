@@ -72,16 +72,16 @@ class Progress:
             self.visible = False
             print('\r\033[2K', end='', flush=True)
 
-    def tick(self):
+    def tick(self, label='Working'):
         elapsed = int(time.monotonic() - self.started)
         if sys.stdout.isatty():
             self.visible = True
             frames = '◐◓◑◒'
             print('\r' + paint(frames[self.frame % 4], 'orange') +
-                  f' Working · {elapsed}s elapsed · waiting for agent output', end='', flush=True)
+                  f' {label} · {elapsed}s elapsed · waiting for agent output', end='', flush=True)
             self.frame += 1
         elif elapsed - self.last >= 15:
-            print(f'[Working · {elapsed}s elapsed · waiting for agent output]', flush=True)
+            print(f'[{label} · {elapsed}s elapsed · waiting for agent output]', flush=True)
             self.last = elapsed
 
 

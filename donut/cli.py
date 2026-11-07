@@ -9,6 +9,7 @@ from .config import load
 from .install_skills import install
 from .providers import validate, activate
 from .runner import run_agent, run_batch
+from .planner_output import ticket_snapshot, show_created_tickets
 from .setup import setup, discover
 from .ui import banner, welcome, release_version, paint
 
@@ -18,7 +19,7 @@ def plan_session(profile, alias, project, request=None):
     state = Path(os.environ.get('XDG_STATE_HOME', Path.home()/'.local/state'))/'donut'
     state.mkdir(parents=True, exist_ok=True)
     run = Path(tempfile.mkdtemp(prefix='plan-', dir=state))
-    print(f'Planner: {alias}\nProject: {project}\nLogs: {run}')
+    print(f'Planner: {alias} ({profile.get("model") or profile["engine"] + " default"})\nProject: {project}\nLogs: {run}')
     interactive = request is None
     if interactive:
         print('Describe what to plan. Enter /exit to leave (or Ctrl-D; Windows: Ctrl-Z then Enter).')
@@ -35,19 +36,23 @@ def plan_session(profile, alias, project, request=None):
                   'This explicit planner assignment overrides worker-only prohibitions on creating tickets. '
                   'Research the request and write scoped tickets in swim_lanes/to_do/. Inspect existing tickets '
                   'before adding or updating them; preserve work already in progress or done. Do not implement, '
-                  'commit or push. Earlier user requests in this planning session:\n' + json.dumps(history) +
+                  'commit or push. Your final response must be at most two short sentences describing what you did, '
+                  'or a concise clarification question if needed. Do not repeat ticket lists or technical details; '
+                  'Donut will list the created tickets. Earlier user requests in this planning session:\n' + json.dumps(history) +
                   '\nUser request:\n' + request)
         if history:
             prompt += f'\nPrevious planner output (consult for follow-up context): {run / f"{len(history):03}.log"}'
+        before = ticket_snapshot(project)
         activate(profile)
         try:
-            code = run_agent(profile, project, prompt, run/f'{len(history) + 1:03}.log')
+            code = run_agent(profile, project, prompt, run/f'{len(history) + 1:03}.log', planner=True)
         finally:
             if profile['engine'] == 'ollama': activate(profile)
         if code:
             print(paint('PLANNING FAILED\nCheck the output and logs before running workers.', 'coral'))
             return code
         history.append(request)
+        show_created_tickets(project, before)
         print(paint('\nPLANNING COMPLETE', 'teal'))
         print('Try exiting the shell and running `donut --work next 1`')
         if not interactive: return 0
