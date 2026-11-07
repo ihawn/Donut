@@ -3,7 +3,7 @@
 [![Unit tests](https://github.com/ihawn/Donut/actions/workflows/test.yml/badge.svg)](https://github.com/ihawn/Donut/actions/workflows/test.yml)
 [![Release](https://github.com/ihawn/Donut/actions/workflows/release.yml/badge.svg)](https://github.com/ihawn/Donut/actions/workflows/release.yml)
 
-![A loosely drawn donut tells a small donut hole “do the thing.”](docs/images/do-the-thing.png)
+<img src="docs/images/do-the-thing.png" width="320" alt="A loosely drawn donut tells a small donut hole ‘do the thing.’">
 
 Small tickets. Fresh contexts. A local-first command-line wrapper around coding agents.
 
