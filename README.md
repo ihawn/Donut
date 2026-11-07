@@ -25,7 +25,7 @@ For development: `python3 -m venv .venv`, `.venv/bin/pip install -e .`, then `.v
 
 `donut setup` walks through:
 
-1. Choosing a planning provider. Claude/Codex can open their own login flow or reuse an existing login. Grok/compatible endpoints use a named environment variable containing an API key; Donut never asks you to paste that key into its configuration.
+1. Choosing a local or hosted planning/orchestration provider. Select `ollama` for a local model with no cloud login, or a hosted provider. Claude/Codex can open their own login flow or reuse an existing login. Grok/compatible endpoints use a named environment variable containing an API key; Donut never asks you to paste that key into its configuration.
 2. Naming aliases. Each alias selects its engine, model, and optional compatible endpoint. A hosted model can be the worker too.
 3. Discovering registered Ollama models and model files under `~/Models`, `~/Downloads`, `~/.cache/huggingface/hub`, `~/.lmstudio/models`, and `~/.ollama/models`. `--scan PATH` instead scans a directory you choose. It inspects filenames, not personal document contents.
 4. Optionally importing a discovered GGUF into Ollama. Safetensors directories are reported; serve these with a compatible runtime before configuring an endpoint. A raw weight file is not necessarily a runnable coding model.
@@ -45,12 +45,13 @@ Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.c
 
 ```sh
 donut plan "Add wall jumping, with a human feel check"
+donut -m qwen plan "Add wall jumping"  # local orchestrator
 donut -m qwen-faster do next 3
 donut -m qwen do next all
 donut -m cloud-worker do next 1 --project ../another-project
 ```
 
-`-m` / `--model` accepts a configured alias. `-p` / `--project` accepts an absolute or relative directory and defaults to the current directory. Flags work before or after the subcommand. `donut -h` lists commands.
+`-m` / `--model` accepts a configured alias for either planning or execution. The planner/orchestrator and worker may be the same local model, different local models, or hosted models. Setup stores a default planner separately from the default worker. `-p` / `--project` accepts an absolute or relative directory and defaults to the current directory. Flags work before or after the subcommand. `donut -h` lists commands.
 
 `donut init` and `donut add-skills` install skills without login/setup. Existing instructions and skills are kept. They create:
 

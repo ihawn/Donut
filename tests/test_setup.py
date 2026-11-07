@@ -58,6 +58,17 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(saved['planner'],'planner')
         self.assertEqual(saved['aliases']['planner']['engine'],'codex')
 
+    def test_local_orchestrator_setup_never_requests_cloud_login(self):
+        import subprocess
+        answers=iter(['ollama','local-model','y','local-planner','','n','local-planner'])
+        result=subprocess.CompletedProcess(['ollama','list'],0,'NAME ID SIZE MODIFIED\nlocal-model abc 1GB now\n','')
+        with patch('builtins.input',side_effect=lambda _:next(answers)),patch('shutil.which',return_value='/bin/tool'),patch('donut.setup.subprocess.run',return_value=result) as calls,patch('donut.setup.discover',return_value=(['local-model'],[])),patch('donut.setup.install'),contextlib.redirect_stdout(io.StringIO()):
+            setup.setup(self.root)
+        saved=config.load()
+        self.assertEqual(saved['planner'],'local-planner')
+        self.assertEqual(saved['aliases']['local-planner']['engine'],'ollama')
+        self.assertEqual([call.args[0] for call in calls.call_args_list],[['ollama','list']])
+
     def test_provider_commands_do_not_resume(self):
         for engine in ('codex','claude','ollama'):
             with patch('shutil.which',return_value='/bin/agent'):

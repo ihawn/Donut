@@ -6,7 +6,7 @@ import sys
 import tempfile
 from .config import load
 from .install_skills import install
-from .providers import validate
+from .providers import validate, activate
 from .runner import run_agent, run_batch
 from .setup import setup, discover
 from .ui import banner
@@ -19,7 +19,7 @@ def main():
     shared.add_argument('-p', '--project', default=argparse.SUPPRESS, help='project path (default: current directory)')
     parser = argparse.ArgumentParser(prog='donut', parents=[shared], description='Small tickets. Fresh contexts. Local or hosted coding agents.')
     sub = parser.add_subparsers(dest='action', required=True)
-    init = sub.add_parser('setup', parents=[shared], help='interactive authentication, model discovery and project setup')
+    init = sub.add_parser('setup', parents=[shared], help='choose local/hosted orchestrator, discover models and set up project')
     init.add_argument('--scan', help='additional directory to scan for model files')
     sub.add_parser('models', parents=[shared], help='list configured aliases')
     scan = sub.add_parser('discover', parents=[shared], help='find Ollama models and GGUF/Safetensors files')
@@ -66,7 +66,10 @@ def main():
         state.mkdir(parents=True, exist_ok=True)
         run = Path(tempfile.mkdtemp(prefix='plan-', dir=state))
         print(f'Planner: {alias}\nLogs: {run}')
-        return run_agent(profile, project, prompt, run/'planner.log')
+        activate(profile)
+        code = run_agent(profile, project, prompt, run/'planner.log')
+        if profile['engine'] == 'ollama': activate(profile)
+        return code
     except KeyboardInterrupt:
         print('\nCancelled.', file=sys.stderr); return 130
     except (ValueError, OSError, subprocess.SubprocessError) as error:

@@ -54,9 +54,20 @@ def add_alias(config, profile, suggested=''):
         return alias
 
 
-def cloud(config):
-    engine = ask('Planner/provider: codex, claude, grok, or openai', 'codex').lower()
-    if engine in ('codex', 'claude'):
+def configure_provider(config):
+    engine = ask('Orchestrator/provider: ollama (local), codex, claude, grok, or openai', 'codex').lower()
+    if engine == 'local': engine = 'ollama'
+    if engine == 'ollama':
+        for binary in ('ollama', 'qwen'):
+            if not shutil.which(binary): raise ValueError(f'Install {binary} to use a local orchestrator.')
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=15, check=True)
+        models = [line.split()[0] for line in result.stdout.splitlines()[1:] if line.split()]
+        if not models: raise ValueError('No Ollama models found. Pull or import a model, then rerun setup.')
+        print('Available local models:\n' + '\n'.join('  ' + model for model in models))
+        model = ask('Local orchestrator model ID', models[0])
+        if model not in models: raise ValueError('Select an installed model from the list.')
+        profile = {'engine': 'ollama', 'model': model}
+    elif engine in ('codex', 'claude'):
         if not shutil.which(engine): raise ValueError(f'Install {engine}, then rerun donut setup.')
         if yes(f'Run {engine} login now? Choose no if already signed in', True):
             command = ['codex', 'login'] if engine == 'codex' else ['claude', 'auth', 'login']
@@ -73,7 +84,7 @@ def cloud(config):
         validate(profile)
         if not os.environ.get(env): print(f'Authentication pending: export {env} before running this alias.')
     else:
-        raise ValueError('Choose codex, claude, grok, or openai.')
+        raise ValueError('Choose ollama, codex, claude, grok, or openai.')
     profile['auto_approve'] = yes('Allow this agent to run tools without approval in projects you select?')
     alias = add_alias(config, profile, engine)
     if alias:
@@ -84,9 +95,9 @@ def cloud(config):
 
 def setup(project, root=None):
     banner()
-    print('Connect a planning agent. Credentials stay with its CLI or in your environment.')
+    print('Choose a local or hosted orchestrator to plan tickets. Cloud login is optional.')
     config = load()
-    cloud(config)
+    configure_provider(config)
     print(paint('\nDiscovering local models…', 'orange'), flush=True)
     models, files = discover(root)
     for model in models:
@@ -105,9 +116,9 @@ def setup(project, root=None):
             add_alias(config, {'engine': 'ollama', 'model': name, 'auto_approve': True})
         elif not filename.endswith('.gguf'):
             print('Safetensors directory found. Serve it through an OpenAI-compatible runtime, then add its endpoint.')
-    while yes('Add another hosted model or local compatible endpoint?'):
+    while yes('Add another local or hosted model?'):
         planner = config.get('planner')
-        cloud(config)
+        configure_provider(config)
         config['planner'] = planner
         save(config)
     if config['aliases']:

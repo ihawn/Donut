@@ -31,6 +31,16 @@ class CLITests(unittest.TestCase):
                 self.assertEqual(main(), 0)
                 self.assertEqual(run.call_args.args[1:], (self.root.resolve(), '3'))
 
+    def test_local_planner_uses_default_or_explicit_alias_and_model_lifecycle(self):
+        profile = {'engine':'ollama','model':'local-model','auto_approve':True}
+        save({'aliases':{'local':profile}, 'planner':'local'})
+        for args in (['donut','plan','a small task'], ['donut','-m','local','plan','a small task']):
+            with self.subTest(args=args),patch('sys.argv',args),patch('donut.cli.install'),patch('donut.cli.activate') as activate,patch('donut.cli.run_agent',return_value=0) as run,patch.dict(os.environ,{'XDG_STATE_HOME':str(self.root/'state')}),contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(),0)
+                self.assertEqual(activate.call_count,2)
+                self.assertEqual(run.call_args.args[0],profile)
+                self.assertIn('Planning only',run.call_args.args[2])
+
     def test_unknown_alias_does_not_launch_agent(self):
         with patch('sys.argv', ['donut', '-m', 'missing', 'do', 'next', '1']), patch('donut.cli.run_batch') as run, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(), 1)
