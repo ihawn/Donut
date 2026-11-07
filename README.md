@@ -1,5 +1,10 @@
 # ◉ Donut
 
+[![Unit tests](https://github.com/ihawn/Donut/actions/workflows/test.yml/badge.svg)](https://github.com/ihawn/Donut/actions/workflows/test.yml)
+[![Release](https://github.com/ihawn/Donut/actions/workflows/release.yml/badge.svg)](https://github.com/ihawn/Donut/actions/workflows/release.yml)
+
+![A loosely drawn donut tells a small donut hole “do the thing.”](docs/images/do-the-thing.png)
+
 Small tickets. Fresh contexts. A local-first command-line wrapper around coding agents.
 
 Donut uses a planning model to write scoped Markdown tickets, then runs each ticket in a new agent process. Workers can be local Ollama models, Claude Code, Codex, or models served through an OpenAI-compatible endpoint (including Grok). There is no bundled model download.
@@ -62,7 +67,9 @@ Each ticket gets a fresh process with no resume/continue flag. Existing in-progr
 
 Donut uses an orange/navy/coral/teal/gray palette, a loading spinner while the agent is silent, and live emitted text, reasoning, tools, and results. Redirected output has no color and prints periodic status lines. Set `NO_COLOR=1` to disable colors. Some providers expose reasoning summaries or only complete events; Donut cannot display reasoning they do not expose.
 
-The final summary is produced by another fresh agent context using completion notes. Donut checks lane transitions, not the truth of model-authored tests. Human checks remain human checks. Codex's summary context is read-only; Claude disables tools and Qwen sets its tool-call budget to zero.
+The legacy `qwen build next …` and `qwen-faster build next …` batch entry point can also use this runner through the installed `qwen-build-next` compatibility command.
+
+The final summary is a compact Task / Result / Note table covering only tickets attempted during this run. It hides summary reasoning and excludes untouched queue entries. It is produced by another fresh agent context using completion notes. Donut checks lane transitions, not the truth of model-authored tests. Human checks remain human checks. Codex's summary context is read-only; Claude disables tools and Qwen sets its tool-call budget to zero.
 
 Run logs/results live outside the repo under `$XDG_STATE_HOME/donut` (default `~/.local/state/donut`). They can contain project content and tool output, so treat them as private. Ctrl-C terminates the current process group and prevents the next ticket from starting. Re-running resumes unfinished work in a fresh context. Per-project locks stop overlapping Donut batches, but cannot stop manually launched agents or the older Qwen wrapper.
 
@@ -78,3 +85,18 @@ python3 -m donut --help
 Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, process errors, locking, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction.
 
 This first release supports macOS/Linux. Windows process groups and file locking are not implemented. No remote accounts, API keys, user configuration, or run logs belong in this repository.
+
+## Releases
+
+The [Release workflow](https://github.com/ihawn/Donut/actions/workflows/release.yml) runs the complete macOS/Linux unit-test matrix, builds a wheel and source distribution, checks package metadata, and smoke-tests the installed wheel in a clean directory (including the bundled skills).
+
+Run it manually from GitHub Actions to validate and download build artifacts without publishing. To publish a GitHub Release, set `version` in `pyproject.toml`, commit it, and push the matching tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag must exactly match the package version. Successful tagged runs publish the wheel, source distribution and `SHA256SUMS` using GitHub's built-in token; no additional release secret is needed. Re-running the same tag updates its release assets. This publishes to GitHub Releases, not PyPI.
+
+The README graphic is a deliberately rough black-and-white donut doodle, without faces or frosting.

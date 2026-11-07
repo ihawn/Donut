@@ -6,11 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "donut-cli"
 version = "0.1.0"
 description = "Fresh-context coding agents, one swim-lane ticket at a time"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
 donut = "donut.cli:main"
+qwen-build-next = "donut.legacy:main"
 
 [tool.setuptools.package-data]
 donut = ["skills/*/SKILL.md"]

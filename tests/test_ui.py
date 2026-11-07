@@ -23,6 +23,13 @@ class UITests(unittest.TestCase):
         with patch.dict(os.environ,{'NO_COLOR':'1'}):
             self.assertEqual(paint('hello'),'hello')
 
+    def test_summary_hides_reasoning_but_keeps_answer(self):
+        event = {'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'thinking_delta','thinking':'private summary reasoning'}}}
+        self.assertEqual(render_event(json.dumps(event), show_thinking=False), '')
+        self.assertIn('private summary reasoning', render_event(json.dumps(event)))
+        event['event']['delta'] = {'type':'text_delta','text':'| 025 | Done | Tested |'}
+        self.assertIn('025', render_event(json.dumps(event), show_thinking=False))
+
     def test_codex_output(self):
         output=render_event(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'READY'}}))
         self.assertIn('READY',output)

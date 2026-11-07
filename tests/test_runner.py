@@ -65,6 +65,8 @@ print('finished', p.name)
         self.assertEqual(sum('--prompt' in a for a in calls), 3)
         self.assertTrue(all('--resume' not in a and '--continue' not in a for a in calls))
         self.assertIn('--max-tool-calls', calls[-1])
+        summary = calls[-1][calls[-1].index('--prompt') + 1]
+        self.assertNotIn('003_task3', summary)
 
     def test_all_skips_blocked_dependencies(self):
         self.ticket(1, 'block-me')
@@ -117,6 +119,17 @@ print('finished', p.name)
         self.assertIn('PASS',runner.render_event(json.dumps(result)))
         self.assertEqual(runner.render_event(json.dumps(dict(type='assistant',message=dict(content=[])))), '')
         self.assertEqual(runner.render_event('stderr warning\n'),'stderr warning\n')
+
+    def test_bounded_summary_excludes_unattempted_dependencies(self):
+        self.ticket(1, 'first')
+        self.ticket(2, 'waiting', '`missing-task`')
+        result = self.run_batch('1')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        summary = calls[-1][calls[-1].index('--prompt') + 1]
+        self.assertIn('001_first', summary)
+        self.assertNotIn('waiting', summary)
+        self.assertNotIn('missing-task', summary)
 
     def test_dependency_order(self):
         self.ticket(1,'dependent','`parent`')
