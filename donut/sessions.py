@@ -5,6 +5,11 @@ import json
 import shutil
 from pathlib import Path
 from .ui import release_version
+from .providers import native_permission
+
+# The approval answers the terminal returns: allow once, allow for the rest of the session, or deny.
+CODEX_DECISIONS = {"yes": "accept", "always": "acceptForSession", "no": "decline"}
+CODEX_SANDBOX = {"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"}
 
 
 class CodexSession:
@@ -15,6 +20,17 @@ class CodexSession:
         self.serial = 0
         self.thread = None
         self.turn_done = None
+        self.permission = "ask"
+        self.permission_changed = False
+
+    async def set_permission(self, mode):
+        """Codex applies policy overrides on the next turn/start, and they persist for later turns."""
+        self.permission = mode
+        self.permission_changed = bool(self.thread)
+
+    def policy(self):
+        approval, sandbox, reviewer = native_permission("codex", self.permission)
+        return approval, sandbox, reviewer
 
     async def connect(self):
         self.process = await asyncio.create_subprocess_exec(
@@ -92,8 +108,8 @@ class CodexSession:
     async def handle_request(self, event):
         method = event["method"]
         if method.endswith("/requestApproval") and ("commandExecution" in method or "fileChange" in method):
-            allowed = await self.approve(method, event.get("params", {}))
-            await self.send({"id": event["id"], "result": {"decision": "accept" if allowed else "decline"}})
+            decision = await self.approve(method, event.get("params", {}))
+            await self.send({"id": event["id"], "result": {"decision": CODEX_DECISIONS.get(decision, "decline")}})
         else:
             self.emit("error", "Unsupported provider interaction: " + method + "; use /native.")
             await self.send(
@@ -107,19 +123,28 @@ class CodexSession:
             )
 
     async def query(self, text):
+        approval, sandbox, reviewer = self.policy()
         if not self.thread:
             result = await self.request(
                 "thread/start",
                 {
                     "cwd": str(self.project),
                     "model": self.profile.get("model") or None,
-                    "approvalPolicy": "on-request",
-                    "sandbox": "workspace-write",
+                    "approvalPolicy": approval,
+                    "sandbox": sandbox,
+                    "approvalsReviewer": reviewer,
                 },
             )
             self.thread = result["thread"]["id"]
+            self.permission_changed = False
+        params = {"threadId": self.thread, "input": [{"type": "text", "text": text}]}
+        if self.permission_changed:
+            params.update(
+                approvalPolicy=approval, sandboxPolicy={"type": CODEX_SANDBOX[sandbox]}, approvalsReviewer=reviewer
+            )
+            self.permission_changed = False
         self.turn_done = asyncio.get_running_loop().create_future()
-        await self.request("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": text}]})
+        await self.request("turn/start", params)
         await self.turn_done
 
     async def interrupt(self):
@@ -158,12 +183,22 @@ class ClaudeSession:
         self.project, self.profile = project, profile
         self.emit, self.approve = emit, approve
         self.usage = {}
+        self.permission = "ask"
+
+    async def set_permission(self, mode):
+        """Switch Claude's native permission mode in the live session (applied when it is idle)."""
+        self.permission = mode
+        if getattr(self, "owner", None) and not self.owner.done():
+            await self._call("set_permission", mode)
+
+    async def _set_permission(self, mode):
+        await self.client.set_permission_mode(native_permission("claude", mode))
 
     async def _connect(self):
         from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, PermissionResultAllow, PermissionResultDeny
 
         async def permission(name, inputs, context):
-            if await self.approve(name, inputs):
+            if await self.approve(name, inputs) in ("yes", "always"):
                 return PermissionResultAllow(updated_input=inputs)
             return PermissionResultDeny(message="User declined")
 
@@ -176,6 +211,7 @@ class ClaudeSession:
             env=env,
             model=self.profile.get("model") or None,
             setting_sources=["user", "project", "local"],
+            permission_mode=native_permission("claude", self.permission),
             can_use_tool=permission,
             include_partial_messages=True,
         )
@@ -271,15 +307,24 @@ class QwenSession:
         self.session_id = None
         self.usage = {}
         self.process = None
+        self.permission = "ask"
 
     async def connect(self):
         pass
+
+    async def set_permission(self, mode):
+        # Every Qwen turn is a new process, so the next turn picks this up.
+        self.permission = mode
+
+    def effective_permission(self):
+        """Qwen cannot show approval prompts inside Donut, so Ask behaves as Accept edits for it."""
+        return "accept_edits" if self.permission == "ask" else self.permission
 
     async def query(self, text):
         from .providers import command, activate
 
         await asyncio.to_thread(activate, self.profile)
-        args, env = command(self.profile, text)
+        args, env = command(self.profile, text, permission=self.effective_permission())
         if self.session_id:
             args += ["--resume", self.session_id]
         self.process = await asyncio.create_subprocess_exec(

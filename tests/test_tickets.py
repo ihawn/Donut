@@ -118,3 +118,87 @@ class OllamaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PermissionModeTests(unittest.TestCase):
+    def build(self, profile, permission=None):
+        with patch("shutil.which", return_value="/bin/agent"), patch.dict(os.environ, {"KEY": "x"}):
+            args, _ = providers.command(profile, "task", permission=permission)
+        return args
+
+    def test_each_mode_uses_the_providers_own_mechanism(self):
+        claude = {"engine": "claude", "model": "x"}
+        codex = {"engine": "codex", "model": "x"}
+        qwen = {"engine": "ollama", "model": "x"}
+        self.assertIn("auto", self.build(claude, "auto")[self.build(claude, "auto").index("--permission-mode") + 1])
+        self.assertIn("--dangerously-skip-permissions", self.build(claude, "full"))
+        args = self.build(claude, "accept_edits")
+        self.assertEqual(args[args.index("--permission-mode") + 1], "acceptEdits")
+        self.assertIn("--approve-for-me", self.build(codex, "auto"))
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", self.build(codex, "full"))
+        args = self.build(codex, "accept_edits")
+        self.assertEqual(args[args.index("--sandbox") + 1], "workspace-write")
+        args = self.build(qwen, "auto")
+        self.assertEqual(args[args.index("--approval-mode") + 1], "auto")
+        self.assertIn("--yolo", self.build(qwen, "full"))
+
+    def test_unattended_runs_never_wait_for_a_prompt(self):
+        self.assertEqual(providers.batch_permission({"permission_mode": "ask"}), "accept_edits")
+        self.assertEqual(providers.batch_permission({"auto_approve": True}), "full")
+        self.assertEqual(providers.batch_permission({}), "accept_edits")
+        self.assertEqual(providers.batch_permission({"permission_mode": "auto", "auto_approve": True}), "auto")
+        with self.assertRaises(ValueError):
+            providers.validate({"engine": "claude", "permission_mode": "yolo"})
+
+
+class CodexPermissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_thread_and_turn_carry_native_policies(self):
+        import asyncio
+        from donut.sessions import CodexSession
+
+        session = CodexSession(Path("."), {}, lambda *event: None, None)
+        sent = []
+
+        async def request(method, params=None):
+            sent.append((method, params))
+            if method == "thread/start":
+                return {"thread": {"id": "t"}}
+            session.turn_done.set_result(None)
+            return {}
+
+        session.request = request
+        session.permission = "auto"
+        await asyncio.wait_for(session.query("one"), 2)
+        start = sent[0][1]
+        self.assertEqual(
+            (start["approvalPolicy"], start["sandbox"], start["approvalsReviewer"]),
+            ("on-request", "workspace-write", "auto_review"),
+        )
+        self.assertNotIn("approvalPolicy", sent[1][1])
+        await session.set_permission("full")
+        await asyncio.wait_for(session.query("two"), 2)
+        turn = sent[2][1]
+        self.assertEqual(turn["approvalPolicy"], "never")
+        self.assertEqual(turn["sandboxPolicy"], {"type": "dangerFullAccess"})
+        self.assertEqual(turn["approvalsReviewer"], "user")
+        await asyncio.wait_for(session.query("three"), 2)
+        self.assertNotIn("approvalPolicy", sent[3][1])
+
+    async def test_session_wide_approval_maps_to_codex_decision(self):
+        from donut.sessions import CodexSession
+
+        replies = []
+
+        async def approve(name, details):
+            return "always"
+
+        session = CodexSession(Path("."), {}, lambda *event: None, approve)
+
+        async def send(message):
+            replies.append(message)
+
+        session.send = send
+        await session.handle_request(
+            {"id": 7, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}}
+        )
+        self.assertEqual(replies, [{"id": 7, "result": {"decision": "acceptForSession"}}])

@@ -17,14 +17,15 @@ from textual.message import Message
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Footer, LoadingIndicator, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
-from .config import load
+from .config import load, save
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
 from .platform import process_options
-from .providers import ollama_base_url
+from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
 from .ui import COLORS, logo_segments, release_version
 
 
@@ -39,6 +40,8 @@ COMMANDS = [
     ("/plan", "Plan mode: describe work and the planner writes tickets"),
     ("/work", "Run tickets with the worker, one fresh context each"),
     ("/model", "Choose the account and model for this mode"),
+    ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
+    ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
     ("/usage", "Show usage for each configured connection"),
     ("/plugin", "Browse the provider's plugin commands"),
     ("/mcp", "Show MCP server status"),
@@ -49,6 +52,105 @@ COMMANDS = [
     ("/help", "List commands and keys"),
     ("/exit", "Quit Donut"),
 ]
+
+
+CLAUDE_TOOL_TITLES = {
+    "Bash": ("Bash command", "Bash"),
+    "Edit": ("Edit file", "edits"),
+    "MultiEdit": ("Edit file", "edits"),
+    "Write": ("Write file", "file writes"),
+    "NotebookEdit": ("Edit notebook", "notebook edits"),
+    "WebFetch": ("Fetch", "fetches"),
+    "WebSearch": ("Web search", "web searches"),
+}
+
+
+def approval_title(name, details):
+    """(panel title, short phrase for "don't ask again for …") for a Claude tool name or a Codex request method."""
+    if "commandExecution" in name:
+        return "Codex command", "commands"
+    if "fileChange" in name:
+        return "Codex file change", "file changes"
+    if name in CLAUDE_TOOL_TITLES:
+        return CLAUDE_TOOL_TITLES[name]
+    if name.startswith("mcp__"):
+        server, _, tool = name[5:].partition("__")
+        return f"{server} · {tool}", tool or server
+    return name, name
+
+
+def _command_text(details):
+    command = details.get("command")
+    if isinstance(command, list):
+        return " ".join(str(part) for part in command)
+    return str(command) if command is not None else ""
+
+
+def _clip(text, width=160):
+    text = str(text)
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def approval_summary(details):
+    """One short line for the transcript after a decision."""
+    if "command" in details:
+        return _clip(_command_text(details).splitlines()[0] if _command_text(details) else "", 100)
+    for key in ("file_path", "notebook_path", "path", "url", "query", "grantRoot"):
+        if details.get(key):
+            return _clip(details[key], 100)
+    return ""
+
+
+def approval_details(details):
+    """What the agent wants to do, shaped like Claude Code's permission prompt rather than raw JSON."""
+    body = Text()
+
+    def lines(text, prefix, style, limit):
+        rows = str(text).splitlines() or [""]
+        for row in rows[:limit]:
+            body.append(prefix + _clip(row) + "\n", style=style)
+        if len(rows) > limit:
+            body.append(f"  … {len(rows) - limit} more lines\n", style=DIM)
+
+    if "command" in details:
+        command = _command_text(details)
+        body.append("$ ", style=DIM)
+        lines(command, "", f"bold {ORANGE}", 6)
+        if details.get("description"):
+            body.append(_clip(details["description"]) + "\n", style=DIM)
+        if details.get("cwd"):
+            body.append("in " + _clip(details["cwd"]) + "\n", style=DIM)
+    path = details.get("file_path") or details.get("notebook_path") or details.get("path")
+    if path:
+        body.append(_clip(path) + "\n", style=f"bold {ORANGE}")
+    edits = details.get("edits") if isinstance(details.get("edits"), list) else None
+    if "old_string" in details or "new_string" in details:
+        lines(details.get("old_string", ""), "- ", CORAL, 5)
+        lines(details.get("new_string", ""), "+ ", TEAL, 5)
+    elif edits:
+        body.append(f"{len(edits)} edits\n", style=GRAY)
+        for edit in edits[:2]:
+            if isinstance(edit, dict):
+                lines(edit.get("old_string", ""), "- ", CORAL, 3)
+                lines(edit.get("new_string", ""), "+ ", TEAL, 3)
+    elif "content" in details and path:
+        lines(details["content"], "  ", GRAY, 8)
+    for key, label in (("url", ""), ("query", ""), ("prompt", ""), ("grantRoot", "write access to "), ("reason", "")):
+        if details.get(key) and not (key == "prompt" and "url" not in details):
+            body.append(label + _clip(details[key]) + "\n", style=GRAY if key != "reason" else DIM)
+    if not body.plain.strip():
+        shown = 0
+        for key, value in details.items():
+            if shown == 6:
+                break
+            if isinstance(value, (str, int, float, bool)) and str(value).strip():
+                body.append(f"{key}: ", style=DIM)
+                body.append(_clip(value) + "\n", style=GRAY)
+                shown += 1
+        if not shown:
+            body.append(_clip(json.dumps(details, ensure_ascii=False), 300) + "\n", style=GRAY)
+    body.append("\nDo you want to proceed?", style=f"bold {GRAY}")
+    return body
 
 
 class Menu(Vertical):
@@ -66,6 +168,9 @@ class Menu(Vertical):
     Menu OptionList > .option-list--option-highlighted {{background: #3a2a10;}}
     Menu OptionList > .option-list--option-hover {{background: {NAVY};}}
     Menu #menu-empty {{color: {DIM}; display: none;}}
+    Menu #menu-details {{display: none; height: auto; max-height: 16; padding: 0 1 1 1;}}
+    Menu.-approve {{max-height: 26; border: round {ORANGE}; border-subtitle-color: {DIM};}}
+    Menu.-approve #menu-details {{display: block;}}
     """
 
     class Chosen(Message):
@@ -82,6 +187,7 @@ class Menu(Vertical):
         self.kind = None
 
     def compose(self):
+        yield Static(id="menu-details")
         options = OptionList(id="menu-options")
         options.can_focus = False
         yield options
@@ -91,17 +197,23 @@ class Menu(Vertical):
     def is_open(self):
         return self.has_class("-open")
 
-    def open(self, kind, title, rows, term=""):
-        """rows: (label, value) or (label, value, description) tuples."""
+    def open(self, kind, title, rows, term="", details=None, subtitle=""):
+        """rows: (label, value) or (label, value, description) tuples.
+
+        kind is "slash", "pick" (typing filters) or "approve" (fixed rows, number keys choose, details shown).
+        """
         self.kind = kind
         self.border_title = title
+        self.border_subtitle = subtitle
         self.rows = [row if len(row) == 3 else (row[0], row[1], "") for row in rows]
+        self.set_class(kind == "approve", "-approve")
+        self.query_one("#menu-details", Static).update(details or "")
         self.add_class("-open")
         self.filter(term)
 
     def close(self):
         self.kind = None
-        self.remove_class("-open")
+        self.remove_class("-open", "-approve")
 
     def filter(self, term):
         term = term.strip().casefold()
@@ -119,6 +231,8 @@ class Menu(Vertical):
         for index, (label, _, description) in enumerate(self.visible_rows):
             chosen = index == highlighted
             prompt = Text("› " if chosen else "  ", style=f"bold {CORAL}")
+            if self.kind == "approve":
+                prompt.append(f"{index + 1}. ", style=ORANGE if chosen else DIM)
             prompt.append(label.ljust(width), style=f"bold {ORANGE}" if chosen else ORANGE)
             if description:
                 prompt.append("   " + description, style="#ffffff" if chosen else DIM)
@@ -170,6 +284,12 @@ class Draft(TextArea):
             else:
                 self.post_message(Menu.Chosen(menu.current(), event.key))
             return
+        if menu.kind == "approve" and event.key.isdigit() and 1 <= int(event.key) <= len(menu.visible_rows):
+            event.stop()
+            event.prevent_default()
+            menu.render_rows(int(event.key) - 1)
+            self.post_message(Menu.Chosen(menu.current(), "enter"))
+            return
         if event.key in self.SEND_KEYS:
             event.stop()
             event.prevent_default()
@@ -207,6 +327,8 @@ class Donut(App):
         Binding("ctrl+l", "clear", "Clear view"),
         Binding("f2", "models", "Models"),
         Binding("f3", "modes", "Mode"),
+        # priority=True: the editor would otherwise use shift+tab itself.
+        Binding("shift+tab", "cycle_permission", "Permissions", priority=True),
     ]
 
     def __init__(self, project, alias=None):
@@ -229,6 +351,11 @@ class Donut(App):
         self.turn_text = ""
         self.last_answer = ""
         self.picking = None
+        self.queued = []
+        self.always_allow = set()
+        mode = self.config.get("permission_mode")
+        self.permission = mode if mode in PERMISSION_MODES else "ask"
+        self.previous_permission = "ask"
 
     def compose(self):
         yield RichLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
@@ -283,26 +410,40 @@ class Donut(App):
         line.append(f"  {self.selected[self.mode] or 'unconfigured'}", style=f"bold {ORANGE}")
         line.append(f"  ·  {profile.get('model') or 'provider default'}", style=GRAY)
         line.append(f"  ·  {activity}", style=CORAL if activity != "Ready" else DIM)
+        label = PERMISSION_MODES[self.permission][0].lower()
+        if self.permission == "ask":
+            line.append(f"   ⏵ {label}", style=DIM)
+        else:
+            line.append(f"   ⏵⏵ {label} on", style=f"bold {CORAL if self.permission == 'full' else ORANGE}")
+        line.append("  (shift+tab)", style=DIM)
+        if self.queued:
+            line.append(f"   {len(self.queued)} queued", style=CORAL)
         self.query_one("#status", Static).update(line)
 
     def say(self, text, style=None):
         self.query_one(RichLog).write(Text(text, style=style) if style and isinstance(text, str) else text)
 
-    async def choose(self, title, rows):
-        """Show rows in the inline menu and wait for a choice. Returns the chosen value, or None."""
+    async def choose(self, title, rows, kind="pick", details=None, subtitle=""):
+        """Show rows in the inline menu and wait for a choice. Returns the chosen value, or None.
+
+        A "pick" uses the prompt as its filter, so the prompt is cleared around it. An "approve" leaves
+        whatever the user is drafting alone.
+        """
         if not rows:
             return None
         menu = self.query_one(Menu)
         future = asyncio.get_running_loop().create_future()
         self.picking = future
-        self.query_one(Draft).clear()
-        menu.open("pick", title, rows)
+        if kind == "pick":
+            self.query_one(Draft).clear()
+        menu.open(kind, title, rows, details=details, subtitle=subtitle)
         try:
             return await future
         finally:
             self.picking = None
             menu.close()
-            self.query_one(Draft).clear()
+            if kind == "pick":
+                self.query_one(Draft).clear()
 
     def slash_rows(self):
         rows = [(name, name, description) for name, description in COMMANDS]
@@ -318,7 +459,7 @@ class Donut(App):
     def on_menu_chosen(self, event):
         menu = self.query_one(Menu)
         draft = self.query_one(Draft)
-        if menu.kind == "pick":
+        if menu.kind in ("pick", "approve"):
             if self.picking and not self.picking.done():
                 self.picking.set_result(event.row[1] if event.row else None)
             return
@@ -345,12 +486,61 @@ class Donut(App):
             self.status(str(text))
 
     async def approve(self, name, details):
-        summary = json.dumps(details, indent=2, ensure_ascii=False)
-        if len(summary) > 1500:
-            summary = summary[:1500] + "\n…"
-        self.say(Text("Permission requested: " + name, style=f"bold {CORAL}"))
-        self.say(Text(summary, style=GRAY))
-        return bool(await self.choose("Allow " + name + "?", [("Allow once", True), ("Deny", False)]))
+        """Ask about one tool call. Returns "yes", "always" (for the rest of this session) or "no"."""
+        details = details if isinstance(details, dict) else {"input": details}
+        title, short = approval_title(name, details)
+        if title in self.always_allow:
+            return "always"
+        rows = [
+            ("Yes", "yes"),
+            (f"Yes, and don't ask again for {short} this session", "always"),
+            ("No", "no"),
+        ]
+        decision = await self.choose(
+            title, rows, kind="approve", details=approval_details(details), subtitle="Enter to choose · Esc to deny"
+        )
+        decision = decision or "no"
+        if decision == "always":
+            self.always_allow.add(title)
+        summary = approval_summary(details)
+        line = Text("  ✓ " if decision != "no" else "  ✗ ", style=TEAL if decision != "no" else CORAL)
+        line.append(("Allowed " if decision != "no" else "Denied ") + title, style=GRAY)
+        if summary:
+            line.append("  " + summary, style=DIM)
+        self.say(line)
+        return decision
+
+    async def set_permission(self, mode, announce=True):
+        """Apply a permission mode to every open session through the provider's own mechanism, and remember it."""
+        if mode != self.permission:
+            self.previous_permission = self.permission
+        self.permission = mode
+        self.status("Ready" if not self.busy else "Thinking…")
+        try:
+            config = load()
+            config["permission_mode"] = mode
+            save(config)
+            self.config["permission_mode"] = mode
+        except (ValueError, OSError) as error:
+            self.say(f"Permission mode applies to this session only: {error}", DIM)
+        for session in list(self.sessions.values()):
+            try:
+                await session.set_permission(mode)
+            except Exception as error:
+                self.say(f"Could not change the provider's permission mode: {error}", CORAL)
+        if announce:
+            label, description = PERMISSION_MODES[mode]
+            line = Text(f"  {label} mode", style=f"bold {ORANGE if mode != 'full' else CORAL}")
+            line.append("  " + description + ".", style=GRAY)
+            engine = self.profiles[self.mode].get("engine")
+            if mode == "ask" and engine in ("ollama", "openai"):
+                line.append(" Qwen can't show approval prompts here, so it edits files without asking.", style=DIM)
+            self.say(line)
+
+    def action_cycle_permission(self):
+        modes = PERMISSION_CYCLE
+        following = modes[(modes.index(self.permission) + 1) % len(modes)] if self.permission in modes else "ask"
+        self.run_worker(self.set_permission(following), group="permission")
 
     async def session(self, alias, profile):
         key = (alias, profile.get("model"))
@@ -370,6 +560,7 @@ class Donut(App):
                     "Persistent sessions for this engine are not implemented yet. Use /native for its full interactive client."
                 )
             session = cls(self.project, profile, self.event, self.approve)
+            session.permission = self.permission
             try:
                 await session.connect()
             except BaseException:
@@ -384,6 +575,8 @@ class Donut(App):
         text = event.text_area.text
         if menu.kind == "pick":
             menu.filter(text)
+        elif menu.kind == "approve":
+            return
         elif text.startswith("/") and not any(c.isspace() for c in text) and not self.busy:
             if not menu.is_open:
                 menu.open("slash", "Commands", self.slash_rows())
@@ -395,14 +588,18 @@ class Donut(App):
     def action_send(self):
         if len(self.screen_stack) > 1:
             return
-        if self.busy:
-            self.notify("A turn is running. Cancel it before starting another.", severity="warning")
-            return
-        editor = self.query_one(TextArea)
+        editor = self.query_one(Draft)
         text = editor.text.strip()
-        if text:
-            editor.clear()
-            self.execute(text)
+        if not text:
+            return
+        editor.clear()
+        if self.busy:
+            # Like Claude Code: a message sent during a turn waits and runs as soon as the turn ends.
+            self.queued.append(text)
+            self.say(Text("  queued · " + text.splitlines()[0][:100], style=DIM))
+            self.status("Thinking…")
+            return
+        self.execute(text)
 
     def on_draft_submitted(self, event):
         self.action_send()
@@ -424,6 +621,12 @@ class Donut(App):
             self.picking.set_result(None)
         elif menu.is_open:
             menu.close()
+        if self.queued:
+            # Put queued messages back in the prompt so nothing typed is lost.
+            draft = self.query_one(Draft)
+            draft.load_text("\n".join(self.queued + ([draft.text] if draft.text.strip() else [])))
+            draft.move_cursor(draft.document.end)
+            self.queued.clear()
         if self.active:
             await self.active.interrupt()
         if self.child and self.child.returncode is None:
@@ -443,7 +646,7 @@ class Donut(App):
 
     @work(exclusive=True)
     async def execute(self, text):
-        if not self.selected[self.mode] and not text.startswith(("/help", "/exit", "/quit")):
+        if not self.selected[self.mode] and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto")):
             self.say("Run donut setup to configure an account first.")
             return
         self.busy = True
@@ -452,9 +655,11 @@ class Donut(App):
         try:
             if text.startswith("/"):
                 await self.command(text)
-            elif self.mode == "work":
-                self.say("Choose tickets with /work. Free-form requests belong in /plan.")
             else:
+                if self.mode == "work":
+                    # Conversation always goes to the planner; /work only runs tickets.
+                    self.mode = "plan"
+                    self.say("Switched to plan mode for this message.", DIM)
                 await self.plan(text)
         except asyncio.CancelledError:
             raise
@@ -463,8 +668,14 @@ class Donut(App):
         finally:
             self.active = None
             self.busy = False
-            self.query_one("#thinking", LoadingIndicator).display = False
-            self.status("Ready")
+            try:
+                self.query_one("#thinking", LoadingIndicator).display = False
+                self.status("Ready")
+                self.query_one(Draft).focus()
+            except NoMatches:
+                return  # The app is shutting down.
+            if self.queued:
+                self.call_after_refresh(self.execute, self.queued.pop(0))
 
     async def command(self, text):
         words = shlex.split(text)
@@ -490,10 +701,27 @@ class Donut(App):
                 )
                 if choice:
                     await self.work_tickets(choice)
+                # Back to planning, so the next message is a follow-up rather than refused.
+                self.mode = "plan"
             else:
                 self.say("Planning mode. Describe what to plan.", ORANGE)
         elif name == "/model":
             await self.models()
+        elif name == "/permissions":
+            rows = [(label, mode, description) for mode, (label, description) in PERMISSION_MODES.items()]
+            if args and args[0] in PERMISSION_MODES:
+                chosen = args[0]
+            else:
+                current = PERMISSION_MODES[self.permission][0]
+                chosen = await self.choose(f"Permission mode · now {current}", rows)
+            if chosen:
+                await self.set_permission(chosen)
+        elif name == "/auto":
+            if self.permission == "auto":
+                fallback = self.previous_permission if self.previous_permission != "auto" else "ask"
+                await self.set_permission(fallback)
+            else:
+                await self.set_permission("auto")
         elif name == "/usage":
             await self.usage()
         elif name == "/clear":
@@ -506,7 +734,7 @@ class Donut(App):
             self.notify("Copied last response (terminal clipboard support required).")
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /model · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nProvider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nShift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Provider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.mode], self.profiles[self.mode])
@@ -643,7 +871,7 @@ class Donut(App):
             raise ValueError("Run donut setup to configure a worker.")
         with tempfile.TemporaryDirectory(prefix="donut-worker-") as temp:
             config = copy.deepcopy(self.config)
-            config["aliases"][alias] = self.profiles["work"]
+            config["aliases"][alias] = dict(self.profiles["work"], permission_mode=self.permission)
             folder = Path(temp) / "donut"
             folder.mkdir()
             path = folder / "config.json"

@@ -20,7 +20,16 @@ def save(config):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", alias):
             raise ValueError("Aliases may contain letters, numbers, underscores and hyphens.")
         validate(profile)
-        allowed = {"engine", "model", "base_url", "key_env", "auto_approve", "claude_config_dir", "unload_others"}
+        allowed = {
+            "engine",
+            "model",
+            "base_url",
+            "key_env",
+            "auto_approve",
+            "claude_config_dir",
+            "unload_others",
+            "permission_mode",
+        }
         if set(profile) - allowed:
             raise ValueError("Unexpected profile fields; credentials cannot be saved.")
     path = config_path()

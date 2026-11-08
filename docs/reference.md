@@ -14,6 +14,18 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
 - `/usage` shows each connection's available usage. Codex account rate limits are queried from its app server. Claude exposes session tokens and reported cost here; subscription quotas require native Claude `/usage`. Unavailable figures are identified explicitly.
 - `/plugin`, `/mcp`, and `/context` inspect selected-provider capabilities. Claude plugin slash commands are discovered from the native engine and can be invoked directly. Codex uses its native plugin inventory and MCP status interfaces.
 - `/native` suspends Donut and opens the selected provider's original interactive client, preserving its account/model selection. Use it for native plugin installation, provider-only built-ins, and interactions that Donut cannot yet render. Exit the client to return to Donut.
+- `/permissions` picks how much the agent may do without asking, and `/auto` turns auto mode on or off. Shift+Tab cycles Ask, Accept edits and Auto, as in Claude Code. The choice is saved and applied to every provider through its own mechanism:
+
+  | Mode | Claude | Codex | Qwen |
+  |---|---|---|---|
+  | Ask | `default` permission mode | `untrusted` approvals, workspace-write sandbox | `default` (behaves as Accept edits, since Qwen cannot show prompts inside Donut) |
+  | Accept edits | `acceptEdits` | `on-request` approvals, workspace-write sandbox | `auto-edit` |
+  | Auto | `auto`, a classifier approves or blocks each call | `auto_review` reviewer subagent; `--approve-for-me` for workers | `auto`, an LLM classifier |
+  | Full access | `bypassPermissions` | `never` approvals, no sandbox | `yolo` |
+
+  A live Claude session switches mode immediately when idle; Codex applies the new policy from the next turn; Qwen starts each turn with it. `/work` passes the mode to its workers. Unattended workers cannot answer prompts, so Ask runs them as Accept edits.
+- Permission prompts appear inline above the prompt with the command or file diff. Press 1 to allow once, 2 to allow that kind of action for the rest of the session, 3 or Escape to deny.
+- Messages sent while a turn is running are queued and sent when it finishes, like Claude Code. Ctrl+C cancels the turn and puts queued messages back in the prompt. Free-form messages always go to the planner, including right after `/work`.
 - `/clear` starts a fresh conversation for the selected account/model. `/copy` copies the last answer. `/exit` closes the terminal.
 
 **Compatibility boundary:** this release supplies a shared terminal and provider sessions; it does not reproduce every upstream command, plugin manager, interaction type, or clipboard behavior. Unsupported Codex interaction requests are rejected visibly rather than auto-approved. Native-only features remain accessible through `/native`. Qwen/local turns use Qwen's native saved-session mechanism; API-compatible connections use Qwen as their agent engine. Legacy CLI modes below remain supported.

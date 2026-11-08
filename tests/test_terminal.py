@@ -37,7 +37,7 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertFalse(menu.is_open)
                 self.assertFalse(app.busy)
-                self.assertEqual(app.mode, "work")
+                self.assertEqual(app.mode, "plan")  # /work returns to planning so follow-ups are accepted.
 
     async def test_model_picker_keeps_account_and_model_together(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -180,21 +180,180 @@ class SlashMenuTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertFalse(app.query_one(Menu).is_open)
 
-    async def test_tool_approval_is_inline(self):
+    async def test_tool_approval_is_an_inline_panel_with_number_keys(self):
         with tempfile.TemporaryDirectory() as temp:
             app = await self.run_app(temp)
             async with app.run_test() as pilot:
                 await pilot.pause()
-                answer = asyncio.ensure_future(app.approve("Bash", {"command": "ls"}))
+                answer = asyncio.ensure_future(app.approve("Bash", {"command": "ls -la", "description": "List files"}))
                 await pilot.pause()
                 menu = app.query_one(Menu)
                 self.assertTrue(menu.is_open)
-                self.assertEqual([row[0] for row in menu.visible_rows], ["Allow once", "Deny"])
-                await pilot.press("down", "enter")
+                self.assertEqual(menu.kind, "approve")
+                self.assertEqual(menu.border_title, "Bash command")
+                self.assertEqual([row[1] for row in menu.visible_rows], ["yes", "always", "no"])
+                details = menu.query_one("#menu-details").render()
+                self.assertIn("$ ls -la", str(details))
+                self.assertNotIn("{", str(details))  # Not a raw JSON dump.
+                await pilot.press("3")
                 await pilot.pause()
-                self.assertFalse(await answer)
+                self.assertEqual(await answer, "no")
                 answer = asyncio.ensure_future(app.approve("Bash", {"command": "ls"}))
                 await pilot.pause()
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertTrue(await answer)
+                self.assertEqual(await answer, "yes")
+                answer = asyncio.ensure_future(app.approve("Bash", {"command": "pwd"}))
+                await pilot.pause()
+                await pilot.press("2")
+                await pilot.pause()
+                self.assertEqual(await answer, "always")
+                self.assertEqual(await app.approve("Bash", {"command": "whoami"}), "always")  # No second prompt.
+                self.assertFalse(menu.is_open)
+                lines = [strip.text for strip in app.query_one(RichLog).lines]
+                self.assertTrue(any("Denied Bash command" in line and "ls -la" in line for line in lines))
+
+    async def test_escape_denies_and_keeps_the_draft(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = await self.run_app(temp)
+            async with app.run_test() as pilot:
+                draft = app.query_one(Draft)
+                draft.insert("half-typed follow-up")
+                answer = asyncio.ensure_future(app.approve("Write", {"file_path": "a.txt", "content": "x"}))
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertEqual(await answer, "no")
+                self.assertEqual(draft.text, "half-typed follow-up")
+
+
+class FakeSession:
+    def __init__(self, app, delay=0.3):
+        self.app, self.delay, self.calls, self.modes = app, delay, [], []
+
+    async def query(self, text):
+        self.calls.append(text)
+        self.app.event("text", f"answer {len(self.calls)}")
+        await asyncio.sleep(self.delay)
+
+    async def set_permission(self, mode):
+        self.modes.append(mode)
+
+    async def interrupt(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+class ConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        config = {"aliases": {"claude": {"engine": "claude"}}, "planner": "claude"}
+        self.saved = []
+        patches = [
+            patch("donut.terminal.load", return_value=config),
+            patch("donut.terminal.save", side_effect=lambda c: self.saved.append(dict(c))),
+            patch("donut.terminal.install"),
+        ]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        self.app = Donut(Path(self.temp.name))
+        self.fake = FakeSession(self.app)
+
+        async def session(alias, profile):
+            self.app.sessions[(alias, profile.get("model"))] = self.fake
+            return self.fake
+
+        self.app.session = session
+
+    async def wait_for(self, pilot, condition, timeout=5):
+        for _ in range(int(timeout / 0.02)):
+            if condition():
+                return
+            await pilot.pause(0.02)
+        self.fail("condition not reached")
+
+    async def send(self, pilot, text):
+        draft = self.app.query_one(Draft)
+        draft.clear()
+        draft.insert(text)
+        await pilot.press("enter")
+
+    async def test_follow_ups_reach_the_same_session(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "first")
+            await pilot.pause(0.5)
+            await self.send(pilot, "second")
+            await pilot.pause(0.5)
+            self.assertEqual(len(self.fake.calls), 2)
+            self.assertTrue(self.fake.calls[1].endswith("second"))
+
+    async def test_messages_sent_during_a_turn_are_queued_then_run(self):
+        self.fake.delay = 3
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "first")
+            await self.wait_for(pilot, lambda: len(self.fake.calls) == 1)
+            self.assertTrue(self.app.busy)
+            await self.send(pilot, "follow-up while busy")
+            await self.wait_for(pilot, lambda: self.app.queued == ["follow-up while busy"])
+            self.assertEqual(self.app.query_one(Draft).text, "")
+            self.fake.delay = 0
+            await self.wait_for(pilot, lambda: len(self.fake.calls) == 2 and not self.app.busy, timeout=8)
+            self.assertTrue(self.fake.calls[1].endswith("follow-up while busy"))
+            self.assertEqual(self.app.queued, [])
+
+    async def test_cancel_returns_queued_messages_to_the_prompt(self):
+        self.fake.delay = 3
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "first")
+            await self.wait_for(pilot, lambda: len(self.fake.calls) == 1)
+            await self.send(pilot, "keep me")
+            await self.wait_for(pilot, lambda: self.app.queued == ["keep me"])
+            await pilot.press("ctrl+c")
+            await pilot.pause(0.05)
+            self.assertEqual(self.app.queued, [])
+            self.assertEqual(self.app.query_one(Draft).text, "keep me")
+
+    async def test_free_text_in_work_mode_goes_to_the_planner(self):
+        async with self.app.run_test() as pilot:
+            self.app.mode = "work"
+            await self.send(pilot, "what about tests?")
+            await pilot.pause(0.5)
+            self.assertEqual(len(self.fake.calls), 1)
+            self.assertEqual(self.app.mode, "plan")
+
+    async def test_permissions_picker_auto_toggle_and_shift_tab(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "first")
+            await pilot.pause(0.5)
+            self.assertEqual(self.app.permission, "ask")
+            await self.send(pilot, "/permissions")
+            await pilot.pause()
+            menu = self.app.query_one(Menu)
+            self.assertEqual([row[1] for row in menu.visible_rows], ["ask", "accept_edits", "auto", "full"])
+            await pilot.press("down", "down", "enter")
+            await pilot.pause()
+            self.assertEqual(self.app.permission, "auto")
+            self.assertEqual(self.fake.modes, ["auto"])
+            self.assertEqual(self.saved[-1]["permission_mode"], "auto")
+            await self.send(pilot, "/auto")
+            await pilot.pause()
+            self.assertEqual(self.app.permission, "ask")
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            self.assertEqual(self.app.permission, "accept_edits")
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            self.assertEqual(self.app.permission, "auto")
+            self.assertEqual(self.fake.modes, ["auto", "ask", "accept_edits", "auto"])
+            status = str(self.app.query_one("#status").render())
+            self.assertIn("auto on", status)
+
+    async def test_saved_permission_mode_is_restored(self):
+        config = {"aliases": {"claude": {"engine": "claude"}}, "planner": "claude", "permission_mode": "auto"}
+        with patch("donut.terminal.load", return_value=config):
+            app = Donut(Path(self.temp.name))
+        self.assertEqual(app.permission, "auto")
