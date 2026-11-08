@@ -78,5 +78,20 @@ class PlannerOutputTests(unittest.TestCase):
             with contextlib.redirect_stdout(unchanged): show_created_tickets(project, ticket_snapshot(project))
             self.assertIn('Tickets created: 0', unchanged.getvalue())
 
+    def test_released_hold_ticket_is_not_reported_as_new(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            held = project/'swim_lanes/on_hold'
+            todo = project/'swim_lanes/to_do'
+            held.mkdir(parents=True)
+            todo.mkdir()
+            ticket = held/'001_held.md'
+            ticket.write_text('**Slug:** `held`\n')
+            before = ticket_snapshot(project)
+            ticket.rename(todo/ticket.name)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output): show_created_tickets(project, before)
+            self.assertIn('Tickets created: 0', output.getvalue())
+
 
 if __name__ == '__main__': unittest.main()

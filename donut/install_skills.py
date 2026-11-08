@@ -2,6 +2,7 @@
 """Install project-local Qwen worker skills without replacing existing files."""
 import argparse
 import os
+import re
 from pathlib import Path
 import shutil
 
@@ -9,6 +10,20 @@ UNITY_SKILLS = ('unity-cli', 'unity-pipeline', 'sprite-editor', 'create-2d-physi
                 'ui-ugui', 'optimize-text-mesh-pro', 'audio-setup-mixers',
                 'optimize-audio', 'manage-sprite-atlas', 'urp-postprocessing',
                 'unity-package-management')
+
+
+def update_hold_rules(project, dest, source):
+    file = dest/'SKILL.md'
+    # Preserve linked/custom instructions; add only the missing lane guidance.
+    for path in (file, dest, *dest.parents):
+        if path == project: break
+        if path.is_symlink(): return
+    text = file.read_text(encoding='utf-8')
+    if 'on_hold/' in text: return
+    bundled = (source/'SKILL.md').read_text(encoding='utf-8')
+    section = re.search(r'## On-hold tickets\n.*?(?=\n## |\Z)', bundled, re.S)[0]
+    file.write_text(text.rstrip() + '\n\n' + section.rstrip() + '\n', encoding='utf-8')
+    print(f'Updated on-hold guidance: {file.relative_to(project)}')
 
 
 def install(project, home):
@@ -35,6 +50,7 @@ def install(project, home):
         dest = target / name
         if os.path.lexists(dest):
             print(f'Kept existing: {dest.relative_to(project)}')
+            if name == 'swim-lane-worker': update_hold_rules(project, dest, source)
         else:
             shutil.copytree(source, dest)
             print(f'Installed: {dest.relative_to(project)}')
@@ -44,7 +60,9 @@ def install(project, home):
         if not os.path.lexists(dest):
             shutil.copytree(planner_source, dest)
             print(f'Installed: {relative}')
-    for lane in ('to_do', 'in_progress', 'done'):
+        else:
+            update_hold_rules(project, dest, planner_source)
+    for lane in ('to_do', 'in_progress', 'on_hold', 'done'):
         folder = project / 'swim_lanes' / lane
         folder.mkdir(parents=True, exist_ok=True)
         (folder / '.gitkeep').touch(exist_ok=True)

@@ -135,7 +135,7 @@ donut -m qwen --work
 donut -m cloud-worker --work next 1 --project ../another-project
 ```
 
-Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, `on_hold/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
 
 Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
 
@@ -145,7 +145,7 @@ Each planning prompt starts a new agent process with earlier requests and a refe
 
 `donut init` and `donut add-skills` install skills without login/setup. Existing instructions and skills are kept. They create:
 
-- `swim_lanes/{to_do,in_progress,done}/`
+- `swim_lanes/{to_do,in_progress,on_hold,done}/`
 - `.qwen/skills/swim-lane-worker/SKILL.md`, connected through `QWEN.md`
 - `skills/donut-planner/SKILL.md`, explicitly loaded by `donut --plan` (including Codex), plus Claude/Cursor skill copies
 - Relevant locally available Unity skills when a Unity project is detected
@@ -194,3 +194,9 @@ Successful main runs create the version tag and publish the wheel, source distri
 The README graphic is a deliberately rough black-and-white donut doodle, without faces or frosting.
 
 Installer CI uses `DONUT_INSTALL_SOURCE` to test the just-built wheel before a release exists; normal installations resolve the latest public GitHub Release.
+
+### On-hold tickets
+
+Park deferred tickets in `swim_lanes/on_hold/`. Their numbers and slugs stay reserved. Workers never pick, move or edit held tickets, and held dependencies do not count as complete. Planners keep held specifications consistent but release them to `to_do/` only when explicitly asked; active tickets must not depend on held tickets. `BLOCKED` execution failures still stay in `in_progress/`.
+
+Run `donut add-skills -p PATH` (or setup/planning) to create the new lane in existing projects. Missing on-hold guidance is appended to existing Donut worker/planner skills, preserving their other instructions. Skills already mentioning `on_hold/`, and symlinked skills, are left unchanged.

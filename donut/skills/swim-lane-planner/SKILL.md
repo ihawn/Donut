@@ -7,7 +7,13 @@ description: Research this project and write small self-contained swim-lane impl
 
 Read project instructions and actual code before writing tickets. Describe the user's intended change, not an invented redesign. Preserve unrelated work. Do not implement unless the user explicitly asks you to switch roles.
 
-Write Markdown tickets in swim_lanes/to_do/. Use NNN_YYYYMMDD-HHMM_specific-slug.md with a unique order number across all lanes. Append after the highest number; never renumber in_progress or done. Reference dependencies by slug, not number. Inspect existing tickets to avoid duplicates.
+Write Markdown tickets in swim_lanes/to_do/. Use NNN_YYYYMMDD-HHMM_specific-slug.md with a unique order number across all lanes. Append after the highest number; never renumber in_progress, done, or on_hold. Reference dependencies by slug, not number. Inspect existing tickets to avoid duplicates.
+
+## On-hold tickets
+
+`swim_lanes/on_hold/` contains user-parked tickets, not completed work. Preserve their filenames, numbers and slugs. Reserve their numbers when creating tickets and inspect them to avoid duplicate work. Move held tickets back to `to_do/` only when the user explicitly requests release; do not automatically resume them. Keep their specifications consistent when newly planned work changes something they rely on. A `to_do/` ticket must not depend on a held ticket: leave that work on hold too, or resolve the dependency with the user before queueing it. Workers never pick, move or edit held tickets. Holds are separate from execution failures marked BLOCKED in `in_progress/`.
+
+## Ticket contents
 
 Each ticket must work in a fresh context. Include exact paths, members, code anchors, dependency signatures, preflight checks, and explicit expected test output. Never invent APIs or assume earlier session memory. Keep one behavior per ticket, preferably ≤2 implementation files and ~40 changed lines; split larger or conceptual changes into independently verifiable steps. Use the project's builders for generated files (including Unity scenes).
 

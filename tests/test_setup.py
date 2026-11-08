@@ -28,6 +28,42 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.root/'AGENTS.md').exists())
         self.assertNotIn('Doodle',(self.root/'.qwen/skills/swim-lane-worker/SKILL.md').read_text())
 
+    def test_existing_skills_get_hold_guidance_without_losing_custom_text(self):
+        worker = self.root/'.qwen/skills/swim-lane-worker/SKILL.md'
+        planner = self.root/'skills/donut-planner/SKILL.md'
+        for file in (worker, planner):
+            file.parent.mkdir(parents=True)
+            file.write_text('My existing project instructions.\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            install(self.root, self.root)
+            once = [file.read_bytes() for file in (worker, planner)]
+            install(self.root, self.root)
+        self.assertTrue((self.root/'swim_lanes/on_hold/.gitkeep').is_file())
+        for index, file in enumerate((worker, planner)):
+            self.assertTrue(file.read_text().startswith('My existing project instructions.'))
+            self.assertIn('on_hold/', file.read_text())
+            self.assertEqual(file.read_bytes(), once[index])
+
+    def test_existing_custom_hold_rules_are_preserved(self):
+        worker = self.root/'.qwen/skills/swim-lane-worker/SKILL.md'
+        worker.parent.mkdir(parents=True)
+        worker.write_text('Custom rules for swim_lanes/on_hold/\n')
+        before = worker.read_bytes()
+        with contextlib.redirect_stdout(io.StringIO()): install(self.root, self.root)
+        self.assertEqual(worker.read_bytes(), before)
+
+    @unittest.skipIf(os.name == 'nt', 'Creating symlinks needs Windows privileges')
+    def test_linked_skills_are_not_modified(self):
+        external = self.root/'external'
+        external.mkdir()
+        file = external/'SKILL.md'
+        file.write_text('External custom instructions\n')
+        dest = self.root/'.qwen/skills/swim-lane-worker'
+        dest.parent.mkdir(parents=True)
+        dest.symlink_to(external, target_is_directory=True)
+        with contextlib.redirect_stdout(io.StringIO()): install(self.root, self.root)
+        self.assertEqual(file.read_text(), 'External custom instructions\n')
+
     def test_credentials_not_saved(self):
         profile={'engine':'openai','model':'remote','base_url':'https://example.com/v1','key_env':'TEST_KEY'}
         with patch.dict(os.environ,{'TEST_KEY':'secret-fixture'}),patch('shutil.which',return_value='/bin/qwen'):

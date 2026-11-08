@@ -15,6 +15,10 @@ Paths are relative to the project root containing QWEN.md. Follow that project's
 - Tickets have **Slug:** `name` and **Depends on:** `other-slug`, … or None. Dependencies must be in swim_lanes/done/ before starting.
 - Keep the complete filename unchanged. Move to_do → in_progress before editing; in_progress → done only after verification.
 
+## On-hold tickets
+
+`swim_lanes/on_hold/` contains deliberately parked tickets. Never pick, move, or edit them, even for a named-task assignment. Report that the ticket is on hold instead. It must first be explicitly released back to `to_do/` by the user or by a planner following the user's request. A held dependency is not complete; skip dependent work. Do not move blocked work into `on_hold/` automatically: keep the existing BLOCKED workflow in `in_progress/`.
+
 ## Execute one ticket
 
 1. Read the entire ticket and files it names. Run its Preflight checks before editing. Missing dependencies mean BLOCKED, not permission to rebuild them.

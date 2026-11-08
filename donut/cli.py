@@ -35,7 +35,9 @@ def plan_session(profile, alias, project, request=None):
         prompt = ('Planning only: read skills/donut-planner/SKILL.md and project instructions. '
                   'This explicit planner assignment overrides worker-only prohibitions on creating tickets. '
                   'Research the request and write scoped tickets in swim_lanes/to_do/. Inspect existing tickets '
-                  'before adding or updating them; preserve work already in progress or done. Do not implement, '
+                  'before adding or updating them; preserve work already in progress or done. Inspect swim_lanes/on_hold/ '
+                  'to reserve held ticket numbers and avoid duplicates. Keep held specifications consistent, but '
+                  'release them only on an explicit user request; never queue work depending on a held ticket. Do not implement, '
                   'commit or push. Your final response must be at most two short sentences describing what you did, '
                   'or a concise clarification question if needed. Do not repeat ticket lists or technical details; '
                   'Donut will list the created tickets. Earlier user requests in this planning session:\n' + json.dumps(history) +

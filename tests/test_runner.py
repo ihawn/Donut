@@ -90,6 +90,27 @@ print('finished', p.name)
         self.assertEqual(len(runner.tasks(self.project,'in_progress')),1)
         self.assertEqual(len(runner.tasks(self.project,'to_do')),1)
 
+    def test_on_hold_and_dependent_work_are_skipped(self):
+        (self.project/'swim_lanes/on_hold').mkdir()
+        held = self.ticket(1, 'held', lane='on_hold')
+        before = held.read_bytes()
+        self.ticket(2, 'dependent', '`held`')
+        self.ticket(3, 'independent')
+        result = self.run_batch('all', new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([p.name for p in runner.tasks(self.project, 'done')], ['003_independent.md'])
+        self.assertEqual(held.read_bytes(), before)
+        self.assertTrue((self.project/'swim_lanes/to_do/002_dependent.md').exists())
+
+    def test_hold_wins_over_stale_active_or_done_duplicates(self):
+        (self.project/'swim_lanes/on_hold').mkdir()
+        self.ticket(1, 'held', lane='on_hold')
+        self.ticket(2, 'held', lane='done')
+        self.ticket(3, 'held', lane='in_progress')
+        self.ticket(4, 'dependent', '`held`')
+        independent = self.ticket(5, 'independent')
+        self.assertEqual(runner.pick(self.project, set()), independent)
+
     def test_resume_in_progress_first(self):
         existing = self.ticket(5, 'existing', lane='in_progress')
         self.ticket(1, 'new')

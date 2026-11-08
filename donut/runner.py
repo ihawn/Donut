@@ -43,9 +43,10 @@ def dependencies(path):
 
 def pick(project, attempted):
     done = {slug(p) for p in tasks(project, 'done')}
+    held = {slug(p) for p in tasks(project, 'on_hold')}
     for lane in ('in_progress', 'to_do'):
         for path in tasks(project, lane):
-            if path.name not in attempted and set(dependencies(path)) <= done:
+            if path.name not in attempted and slug(path) not in held and set(dependencies(path)) <= done - held:
                 return path
     return None
 
@@ -192,12 +193,13 @@ def run_batch(profile, project, count):
             prompt = (f'Batch runner: complete exactly ONE named task: {path.relative_to(project)}. '
                       'Read QWEN.md and .qwen/skills/swim-lane-worker/SKILL.md if present. '
                       'This named-task assignment overrides picking any other in-progress task. '
+                      'Never pick, move or edit tickets in swim_lanes/on_hold/, even if named; held dependencies are not complete. '
                       'Check dependencies and preflight, follow scope, run required tests, record actual output '
                       'and completion notes, then move this ticket to done. Leave human checks unticked. '
                       'If blocked, mark BLOCKED: in its completion notes and leave it in in_progress. '
                       'Do not work another ticket, delegate, commit, push, or create branches. Then exit.')
             code = run_agent(profile, project, prompt, run_dir / f'{len(attempted):03}.log')
-            locations = [project / 'swim_lanes' / lane / path.name for lane in ('done', 'in_progress', 'to_do')]
+            locations = [project / 'swim_lanes' / lane / path.name for lane in ('done', 'in_progress', 'to_do', 'on_hold')]
             present = [p for p in locations if p.exists()]
             final = present[0] if len(present) == 1 else None
             notes = final.read_text(encoding='utf-8').split('## Completion notes', 1)[-1][-6000:] if final else 'Ticket missing or duplicated across lanes.'
