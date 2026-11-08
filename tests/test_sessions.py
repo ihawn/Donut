@@ -74,6 +74,30 @@ for line in sys.stdin:
                 await asyncio.wait_for(session.query("first"), 5)
                 await asyncio.wait_for(session.query("second"), 5)
                 self.assertEqual(approvals, ["item/commandExecution/requestApproval"] * 2)
-                self.assertEqual(events, [("text", "READY")] * 2)
+                self.assertEqual([event for event in events if event[0] == "text"], [("text", "READY")] * 2)
+                usage = [event[1] for event in events if event[0] == "usage"]
+                self.assertEqual(usage[0][0]["percent"], 25.0)  # Reported at connect for the usage bar.
             finally:
                 await session.close()
+
+
+class UsageParsingTests(unittest.TestCase):
+    def test_claude_and_codex_windows(self):
+        from types import SimpleNamespace
+        from donut.sessions import claude_usage, codex_usage
+
+        info = SimpleNamespace(
+            raw={
+                "unifiedWindows": {"five_hour": {"utilization": 0.18, "resetsAt": 1}, "seven_day": {"utilization": 0.3}}
+            },
+            utilization=None,
+            rate_limit_type="five_hour",
+            resets_at=1,
+        )
+        self.assertEqual([(w["window"], round(w["percent"])) for w in claude_usage(info)], [("5h", 18), ("7d", 30)])
+        snapshot = {
+            "primary": {"usedPercent": 12, "windowDurationMins": 300},
+            "secondary": {"usedPercent": 40, "windowDurationMins": 10080},
+        }
+        self.assertEqual([(w["window"], w["percent"]) for w in codex_usage(snapshot)], [("5h", 12.0), ("7d", 40.0)])
+        self.assertEqual(codex_usage(None), [])

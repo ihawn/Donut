@@ -49,6 +49,19 @@ class UITests(unittest.TestCase):
         self.assertIn("donut setup", output)
         self.assertLessEqual(max(map(len, LOGO.splitlines())), 72)  # Fits an 80-column terminal with its indent.
 
+    def test_logo_renders_the_same_in_any_monospace_font(self):
+        lines = LOGO.splitlines()
+        # ~ is drawn differently by different fonts, which broke up the outline.
+        self.assertNotIn("~", LOGO)
+        # The speech bubble's three rows share one right edge.
+        self.assertEqual(len({len(line.rstrip()) for line in lines[:3]}), 1)
+        # Each donut row is mirror-symmetric apart from its sprinkles.
+        for line in lines:
+            donut = line[:36].rstrip()
+            outline = "".join(" " if c in "*+o" else c for c in donut)
+            swapped = outline.translate(str.maketrans("/\\", "\\/"))[::-1]
+            self.assertEqual(outline.strip(), swapped.strip(), line)
+
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream):

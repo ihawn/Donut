@@ -103,9 +103,24 @@ class OllamaTests(unittest.TestCase):
             with patch.dict(os.environ, {"OLLAMA_HOST": value}):
                 self.assertEqual(providers.ollama_base_url(), expected)
 
+    def test_ollama_spinner_never_reaches_output_and_errors_are_readable(self):
+        import subprocess
+
+        with patch("donut.providers.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "", "\u280b \u2819 \u2839 ")
+            providers.activate({"engine": "ollama", "model": "m"})
+            self.assertTrue(run.call_args.kwargs["capture_output"])
+            run.return_value = subprocess.CompletedProcess(
+                [], 1, "", "\u280b \x1b[?25l\u2819 \nError: model 'm' not found\n"
+            )
+            with self.assertRaises(ValueError) as caught:
+                providers.activate({"engine": "ollama", "model": "m"})
+        self.assertEqual(str(caught.exception), "ollama run failed: Error: model 'm' not found")
+
     def test_other_models_are_only_unloaded_when_asked(self):
         with patch("donut.providers.subprocess.run") as run:
             run.return_value.stdout = "NAME ID\nother:7b x\nmine:7b y\n"
+            run.return_value.returncode = 0
             providers.activate({"engine": "ollama", "model": "mine:7b"})
             commands = [call.args[0][:2] for call in run.call_args_list]
             self.assertEqual(commands, [["ollama", "run"]])

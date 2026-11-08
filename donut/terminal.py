@@ -5,12 +5,14 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 from rich.text import Text
 from textual import work
 from textual.message import Message
@@ -18,9 +20,10 @@ from textual.app import App
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.css.query import NoMatches
-from textual.widgets import Footer, LoadingIndicator, OptionList, RichLog, Static, TextArea
+from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 from .config import load, save
+from .highlight import Highlighter
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
@@ -35,6 +38,61 @@ def hex_color(name):
 
 ORANGE, CORAL, TEAL, NAVY, GRAY = (hex_color(name) for name in ("orange", "coral", "teal", "navy", "gray"))
 DIM = "#8a96a3"
+
+# Lines the batch runner prints that belong in the status bar, not the transcript.
+RUNNER_PROGRESS = re.compile(r"^\[(?P<label>[^\]]*?) · (?P<seconds>\d+)s elapsed · waiting for agent output\]$")
+RUNNER_TICKET = re.compile(r"^\[\d+/(?:\d+|all)\] (?P<ticket>\S+)")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# Friendlier names for the activity events providers report.
+ACTIVITY_NAMES = {
+    "reasoning": "thinking",
+    "agentMessage": "writing",
+    "commandExecution": "running a command",
+    "fileChange": "editing files",
+    "mcpToolCall": "calling a tool",
+    "webSearch": "searching the web",
+    "Bash": "running a command",
+    "Read": "reading files",
+    "Glob": "searching files",
+    "Grep": "searching files",
+    "Edit": "editing files",
+    "MultiEdit": "editing files",
+    "Write": "writing a file",
+    "WebFetch": "fetching a page",
+    "WebSearch": "searching the web",
+    "TodoWrite": "updating its plan",
+    "Task": "running a subagent",
+    "read_file": "reading files",
+    "write_file": "writing a file",
+    "edit": "editing files",
+    "run_shell_command": "running a command",
+}
+
+
+def usage_key(profile):
+    """Which quota a profile draws from: one per Claude login folder, one for Codex, one per local model."""
+    engine = profile.get("engine")
+    if engine == "claude":
+        return ("claude", profile.get("claude_config_dir") or "default")
+    if engine == "codex":
+        return ("codex",)
+    return ("local", profile.get("model") or engine)
+
+
+def usage_bar(percent, width=8):
+    """A thin bar colored by how close the window is to its limit."""
+    filled = max(0, min(width, round(percent / 100 * width)))
+    color = TEAL if percent < 50 else ORANGE if percent < 80 else CORAL
+    bar = Text("━" * filled, style=color)
+    bar.append("─" * (width - filled), style="#3b4652")
+    return bar, color
+
+
+def model_name(profile, alias):
+    return profile.get("model") or alias or "provider default"
+
 
 COMMANDS = [
     ("/plan", "Plan mode: describe work and the planner writes tickets"),
@@ -310,7 +368,9 @@ class Donut(App):
     #transcript {{height: 1fr; padding: 0 1; background: #101820; scrollbar-size-vertical: 1;
                    scrollbar-background: #101820; scrollbar-color: {CORAL} 50%; scrollbar-color-hover: {ORANGE};}}
     #response {{height: auto; max-height: 20; overflow-y: auto; padding: 0 1;}}
-    #thinking {{height: 1; color: {ORANGE};}}
+    #thinking {{height: 1; padding: 0 2; display: none;}}
+    #thinking.-busy {{display: block;}}
+    #usage {{height: 1; padding: 0 2;}}
     #draft {{height: auto; min-height: 3; max-height: 10; margin: 0 1; border: round {CORAL} 60%;
              background: #101820;}}
     #draft:focus {{border: round {ORANGE};}}
@@ -356,11 +416,16 @@ class Donut(App):
         mode = self.config.get("permission_mode")
         self.permission = mode if mode in PERMISSION_MODES else "ask"
         self.previous_permission = "ask"
+        self.activity = ""
+        self.running = None  # (role, alias, profile) of the model doing the current turn
+        self.started = time.monotonic()
+        self.detail = ""
+        self.usage = {}  # usage_key -> [{"window", "percent", "resets_at"}]
 
     def compose(self):
         yield RichLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
         yield Static(id="response")
-        yield LoadingIndicator(id="thinking")
+        yield Static(id="thinking")
         yield Menu(id="menu")
         yield Draft(
             id="draft",
@@ -369,6 +434,7 @@ class Donut(App):
             placeholder="Describe what to plan, or type / for commands",
         )
         yield Static(id="status")
+        yield Static(id="usage")
         yield Footer()
 
     def on_mount(self):
@@ -376,8 +442,46 @@ class Donut(App):
         self.status("Ready")
         if not self.config.get("aliases"):
             self.say(Text("No accounts configured. Exit and run donut setup.", style=CORAL))
-        self.query_one("#thinking", LoadingIndicator).display = False
         self.query_one(Draft).focus()
+        self.set_interval(0.1, self.tick)
+
+    def tick(self):
+        if self.busy:
+            try:
+                self.render_thinking()
+            except NoMatches:
+                pass  # The timer can fire once more while the app shuts down.
+
+    def start_turn(self, role, detail="", activity="thinking"):
+        """Mark which model is now working, for the spinner and the status line."""
+        alias = self.selected.get(role)
+        self.running = (role, alias, self.profiles.get(role, {}))
+        self.detail = detail
+        self.activity = activity
+        self.started = time.monotonic()
+        self.status()
+
+    def render_thinking(self):
+        widget = self.query_one("#thinking", Static)
+        widget.set_class(self.busy, "-busy")
+        if not self.busy:
+            return
+        elapsed = int(time.monotonic() - self.started)
+        frame = SPINNER[int(time.monotonic() * 10) % len(SPINNER)]
+        line = Text(frame + " ", style=f"bold {ORANGE}")
+        if self.running:
+            role, alias, profile = self.running
+            line.append(model_name(profile, alias), style=f"bold {ORANGE}")
+            line.append(f"  {'planner' if role == 'plan' else 'worker'}", style=DIM)
+            line.append(f"  is {self.activity or 'thinking'}", style=GRAY)
+            if self.detail:
+                detail = self.detail if len(self.detail) <= 40 else self.detail[:39] + "…"
+                line.append(" · " + detail, style=TEAL)
+        else:
+            line.append(self.activity or "working", style=GRAY)
+        line.append(f" · {elapsed}s", style=CORAL)
+        line.append("   ctrl+c to cancel", style=DIM)
+        widget.update(line)
 
     def welcome(self):
         """The logo and a short orientation, written at the top of the transcript when Donut opens."""
@@ -403,13 +507,29 @@ class Donut(App):
         self.say(hint)
         self.say("")
 
-    def status(self, activity):
-        profile = self.profiles[self.mode]
+    def status(self, activity=None):
+        """Redraw the spinner, the role line and the usage bar. activity is what the running model is doing."""
+        if activity is not None and activity not in ("Ready", "Thinking…"):
+            self.activity = activity
+        try:
+            self.render_thinking()
+            self.render_usage()
+        except NoMatches:
+            return
         line = Text()
         line.append(f" {self.mode.upper()} ", style=f"bold #101820 on {ORANGE if self.mode == 'plan' else CORAL}")
-        line.append(f"  {self.selected[self.mode] or 'unconfigured'}", style=f"bold {ORANGE}")
-        line.append(f"  ·  {profile.get('model') or 'provider default'}", style=GRAY)
-        line.append(f"  ·  {activity}", style=CORAL if activity != "Ready" else DIM)
+        running_role = self.running[0] if self.busy and self.running else None
+        for role, title in (("plan", "planner"), ("work", "worker")):
+            alias, profile = self.selected.get(role), self.profiles.get(role, {})
+            if role == running_role:
+                line.append("  ● ", style=f"bold {ORANGE}")
+                line.append(title + " ", style=f"bold {ORANGE}")
+                line.append(model_name(profile, alias), style=f"bold {ORANGE}")
+            else:
+                focus = not running_role and role == self.mode
+                line.append("  ○ ", style=GRAY if focus else DIM)
+                line.append(title + " ", style=DIM)
+                line.append(model_name(profile, alias), style=GRAY if focus else DIM)
         label = PERMISSION_MODES[self.permission][0].lower()
         if self.permission == "ask":
             line.append(f"   ⏵ {label}", style=DIM)
@@ -419,6 +539,52 @@ class Donut(App):
         if self.queued:
             line.append(f"   {len(self.queued)} queued", style=CORAL)
         self.query_one("#status", Static).update(line)
+
+    def usage_groups(self):
+        """One entry per quota: every configured Claude login and Codex, plus the local models in use."""
+        groups = {}
+        selected = {self.selected.get(role) for role in ("plan", "work")}
+        for alias, profile in self.config.get("aliases", {}).items():
+            key = usage_key(profile)
+            if key[0] == "local" and alias not in selected:
+                continue
+            label = alias if key[0] != "local" else model_name(profile, alias).split(":")[0]
+            if key not in groups or alias in selected:
+                groups[key] = label
+        for role in ("plan", "work"):  # Models picked with /model may not be saved aliases.
+            profile = self.profiles.get(role, {})
+            if profile and usage_key(profile) not in groups:
+                key = usage_key(profile)
+                groups[key] = self.selected.get(role) if key[0] != "local" else model_name(profile, "").split(":")[0]
+        return groups
+
+    def render_usage(self):
+        line = Text()
+        running = usage_key(self.running[2]) if self.busy and self.running else None
+        for key, label in self.usage_groups().items():
+            if line:
+                line.append("    ")
+            line.append(label, style=f"bold {ORANGE}" if key == running else GRAY)
+            line.append(" ")
+            if key[0] == "local":
+                line.append("local", style=DIM)
+                continue
+            windows = self.usage.get(key)
+            if not windows:
+                line.append("────────", style="#3b4652")
+                line.append(" –", style=DIM)
+                continue
+            first, *rest = windows
+            bar, color = usage_bar(first["percent"])
+            line.append_text(bar)
+            line.append(f" {round(first['percent'])}%", style=color)
+            if first["window"]:
+                line.append(" " + first["window"], style=DIM)
+            for window in rest[:1]:
+                line.append(f" · {round(window['percent'])}%", style=usage_bar(window["percent"])[1])
+                if window["window"]:
+                    line.append(" " + window["window"], style=DIM)
+        self.query_one("#usage", Static).update(line)
 
     def say(self, text, style=None):
         self.query_one(RichLog).write(Text(text, style=style) if style and isinstance(text, str) else text)
@@ -474,16 +640,24 @@ class Donut(App):
         draft.clear()
         self.execute(command)
 
-    def event(self, kind, text):
+    def event(self, kind, text, key=None):
         if kind == "text":
             from rich.markdown import Markdown as RenderedMarkdown
 
             self.turn_text += text
+            self.activity = "writing"
             self.query_one("#response", Static).update(RenderedMarkdown(self.turn_text))
         elif kind == "error":
             self.say("Error: " + str(text), CORAL)
+        elif kind == "usage":
+            if key is not None and isinstance(text, list):
+                self.usage[key] = text
+                self.status()
         else:
-            self.status(str(text))
+            name = str(text)
+            if name.startswith("mcp__"):
+                name = "using " + name[5:].replace("__", " · ")
+            self.status(ACTIVITY_NAMES.get(name, name if name.startswith("using ") else "using " + name))
 
     async def approve(self, name, details):
         """Ask about one tool call. Returns "yes", "always" (for the rest of this session) or "no"."""
@@ -559,7 +733,8 @@ class Donut(App):
                 raise ValueError(
                     "Persistent sessions for this engine are not implemented yet. Use /native for its full interactive client."
                 )
-            session = cls(self.project, profile, self.event, self.approve)
+            emit = lambda kind, data, key=usage_key(profile): self.event(kind, data, key)  # noqa: E731
+            session = cls(self.project, profile, emit, self.approve)
             session.permission = self.permission
             try:
                 await session.connect()
@@ -650,8 +825,10 @@ class Donut(App):
             self.say("Run donut setup to configure an account first.")
             return
         self.busy = True
-        self.query_one("#thinking", LoadingIndicator).display = True
-        self.status("Thinking…")
+        self.running = None
+        self.activity = "working"
+        self.started = time.monotonic()
+        self.status()
         try:
             if text.startswith("/"):
                 await self.command(text)
@@ -668,8 +845,8 @@ class Donut(App):
         finally:
             self.active = None
             self.busy = False
+            self.running = None
             try:
-                self.query_one("#thinking", LoadingIndicator).display = False
                 self.status("Ready")
                 self.query_one(Draft).focus()
             except NoMatches:
@@ -783,6 +960,7 @@ class Donut(App):
             await self.native()
         else:
             self.active = await self.session(self.selected[self.mode], self.profiles[self.mode])
+            self.start_turn(self.mode)
             self.turn_text = ""
             await self.active.query(text)
             self.answer()
@@ -799,6 +977,7 @@ class Donut(App):
         await asyncio.to_thread(install, self.project, Path.home(), quiet=True)
         before = ticket_snapshot(self.project)
         self.active = await self.session(self.selected["plan"], self.profiles["plan"])
+        self.start_turn("plan")
         prompt = (
             "Read skills/donut-planner/SKILL.md. Plan only: research and write scoped tickets; do not implement or commit. Respect on_hold and blocked lanes and reserve their identities. Give a brief overview when finished; Donut lists created tickets. User request:\n"
             + text
@@ -816,7 +995,7 @@ class Donut(App):
     async def models(self):
         rows = []
         for alias, profile in self.config["aliases"].items():
-            self.status("Discovering " + alias)
+            self.status("discovering models for " + alias)
             try:
                 if profile["engine"] in ("claude", "codex"):
                     session = await self.session(alias, profile)
@@ -893,8 +1072,22 @@ class Donut(App):
                 stderr=asyncio.subprocess.STDOUT,
                 **process_options(),
             )
-            async for line in self.child.stdout:
-                self.say(line.decode("utf-8", errors="replace").rstrip())
+            highlighter, ticket = Highlighter(), ""
+            self.start_turn("work", "", "starting")
+            async for raw in self.child.stdout:
+                # Keep only what a terminal would finally show on this line: no escapes, no \r redraws.
+                line = ANSI_ESCAPE.sub("", raw.decode("utf-8", errors="replace").rstrip("\r\n")).split("\r")[-1]
+                line = line.rstrip()
+                if line and all("\u2800" <= c <= "\u28ff" or c.isspace() for c in line):
+                    continue  # Stray spinner frames.
+                progress = RUNNER_PROGRESS.match(line)
+                if progress:
+                    continue  # The spinner line already shows the worker and its elapsed time.
+                started = RUNNER_TICKET.match(line)
+                if started:
+                    ticket = started["ticket"]
+                    self.start_turn("work", ticket, "working")
+                self.say(highlighter.line(line))
             code = await self.child.wait()
             self.child = None
             if code == 0:

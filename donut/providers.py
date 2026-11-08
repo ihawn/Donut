@@ -162,21 +162,26 @@ def ollama_base_url():
     return host.rstrip("/") + "/v1"
 
 
+def _ollama(*args):
+    """Run an Ollama command quietly. Its progress spinner goes to stderr, so keep stderr for errors only."""
+    result = subprocess.run(
+        ["ollama", *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
+    if result.returncode:
+        detail = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|[\u2800-\u28ff]", "", result.stderr).strip().splitlines()
+        raise ValueError(f"ollama {args[0]} failed: " + (detail[-1] if detail else f"exit {result.returncode}"))
+    return result.stdout
+
+
 def activate(profile):
     """Load the alias's Ollama model. Other loaded models are stopped only when the alias opts in."""
     if profile["engine"] != "ollama":
         return
     if profile.get("unload_others"):
-        result = subprocess.run(["ollama", "ps"], capture_output=True, text=True, check=True)
-        for line in result.stdout.splitlines()[1:]:
+        for line in _ollama("ps").splitlines()[1:]:
             parts = line.split()
             if parts and parts[0] != profile["model"]:
-                subprocess.run(["ollama", "stop", parts[0]], check=True, stdout=subprocess.DEVNULL)
+                _ollama("stop", parts[0])
     # Ollama's CLI sets a per-request residency timeout. Subsequent Qwen requests
     # use the server default; setup documents OLLAMA_KEEP_ALIVE=1h for that server.
-    subprocess.run(
-        ["ollama", "run", profile["model"], "--keepalive", "1h", ""],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-    )
+    _ollama("run", profile["model"], "--keepalive", "1h", "")

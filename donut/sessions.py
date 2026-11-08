@@ -7,7 +7,58 @@ from pathlib import Path
 from .ui import release_version
 from .providers import native_permission
 
+
 # The approval answers the terminal returns: allow once, allow for the rest of the session, or deny.
+def window_label(minutes):
+    """300 -> "5h", 10080 -> "7d"."""
+    if not minutes:
+        return ""
+    return f"{round(minutes / 1440)}d" if minutes >= 1440 else f"{round(minutes / 60)}h"
+
+
+def codex_usage(snapshot):
+    """Usage windows from a Codex RateLimitSnapshot: [{"window", "percent", "resets_at"}]."""
+    windows = []
+    for key in ("primary", "secondary"):
+        window = (snapshot or {}).get(key)
+        if isinstance(window, dict) and isinstance(window.get("usedPercent"), (int, float)):
+            windows.append(
+                {
+                    "window": window_label(window.get("windowDurationMins")),
+                    "percent": float(window["usedPercent"]),
+                    "resets_at": window.get("resetsAt"),
+                }
+            )
+    return windows
+
+
+CLAUDE_WINDOWS = {"five_hour": "5h", "seven_day": "7d", "seven_day_opus": "7d opus", "seven_day_sonnet": "7d sonnet"}
+
+
+def claude_usage(info):
+    """Usage windows from a Claude RateLimitInfo. unifiedWindows carries every window when present."""
+    raw = getattr(info, "raw", None) or {}
+    windows = []
+    for key, window in (raw.get("unifiedWindows") or {}).items():
+        if isinstance(window, dict) and isinstance(window.get("utilization"), (int, float)):
+            windows.append(
+                {
+                    "window": CLAUDE_WINDOWS.get(key, key),
+                    "percent": window["utilization"] * 100,
+                    "resets_at": window.get("resetsAt"),
+                }
+            )
+    if not windows and getattr(info, "utilization", None) is not None:
+        windows.append(
+            {
+                "window": CLAUDE_WINDOWS.get(info.rate_limit_type, info.rate_limit_type or ""),
+                "percent": info.utilization * 100,
+                "resets_at": info.resets_at,
+            }
+        )
+    return windows
+
+
 CODEX_DECISIONS = {"yes": "accept", "always": "acceptForSession", "no": "decline"}
 CODEX_SANDBOX = {"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"}
 
@@ -49,6 +100,17 @@ class CodexSession:
             {"clientInfo": {"name": "donut", "version": release_version()}, "capabilities": {"experimentalApi": True}},
         )
         await self.send({"method": "initialized"})
+        self.usage_task = asyncio.create_task(self.refresh_usage())
+
+    async def refresh_usage(self):
+        """Report account rate limits for the usage bar; failures only mean the bar stays empty."""
+        try:
+            result = await self.request("account/rateLimits/read")
+        except Exception:
+            return
+        windows = codex_usage(result.get("rateLimits"))
+        if windows:
+            self.emit("usage", windows)
 
     async def send(self, message):
         self.process.stdin.write((json.dumps(message) + "\n").encode())
@@ -91,6 +153,10 @@ class CodexSession:
                         self.emit("activity", params.get("item", {}).get("type", "Working"))
                     elif method == "thread/tokenUsage/updated":
                         self.usage = params.get("tokenUsage", {})
+                    elif method == "account/rateLimits/updated":
+                        windows = codex_usage(params.get("rateLimits"))
+                        if windows:
+                            self.emit("usage", windows)
                     elif method == "turn/completed" and self.turn_done and not self.turn_done.done():
                         turn = params.get("turn", {})
                         if turn.get("status") in ("failed", "interrupted"):
@@ -220,11 +286,15 @@ class ClaudeSession:
         self.info = await self.client.get_server_info() or {}
 
     async def _query(self, text):
-        from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock, ResultMessage
+        from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock, ResultMessage, RateLimitEvent
 
         await self.client.query(text)
         async for message in self.client.receive_response():
-            if isinstance(message, AssistantMessage):
+            if isinstance(message, RateLimitEvent):
+                windows = claude_usage(message.rate_limit_info)
+                if windows:
+                    self.emit("usage", windows)
+            elif isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         self.emit("text", block.text)

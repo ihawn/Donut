@@ -15,52 +15,54 @@ COLORS = {
 
 
 LOGO = r"""
-         _.-~~~~~~~~~~~~-._               .-------------------.
-     .-~'     '   .   ,    '~-.           |   do the thing.   |
-   .'   .   ,   *   .   '   o  '.         '---.  .------------'
-  /   ,   .-~~~~~~~~~~~~-.    *  \            | /
- ;  *    /                \       ;           |/
- |    .  |                |   '   |
- ;  '    \                /       ;                   .-~~-.
-  \   o   '-.__________.-'    *  /                   ( .  ' )
-   '.   *   '   .   ,   *   .  .'                     '-..-'
-     '-._     '   .   ,    _.-'
-         '~-.__________.-~'
+            _.------------._              .-----------------.
+        .-''   *    +    o  ''-.          |  do the thing.  |
+      .'   +    o    *    +     '.        '--.  .-----------'
+     /   o   .-''''''''''-.   *   \         /  /
+    |  *    /              \   +   |       / .'
+    |   +  |                |  o   |      /.'
+    |  o    \              /   *   |
+     \   *   '-.________.-'   +   /                 .-''-.
+      '.    +    o    *    o    .'                 ( '  . )
+        '-._   *    +   o   _.-'                    '-..-'
+            '-.__________.-'
 """[1:]
 
-# Columns where the speech bubble starts; everything to its left is the donut.
-_BUBBLE = 38
-_SPRINKLE_COLORS = ("coral", "teal", "coral", "gray", "coral")
-_SPRINKLES = set("*.,'o")
+# Everything left of this column is the donut; to the right are the speech bubble and the donut hole.
+_BUBBLE = 36
+_HOLE_ROW = 7
+_SPRINKLE_COLORS = ("coral", "teal", "gray", "coral", "teal")
+_SPRINKLES = set("*+o")
+_TAGLINE = "do the thing."
 
 
 def logo_segments():
-    """The logo as lines of (text, color) runs, shared by the ANSI printer and the Textual terminal."""
+    """The logo as lines of (text, color) runs, shared by the ANSI printer and the Textual terminal.
+
+    The outline avoids characters such as ~ whose shape varies between terminal fonts, and sprinkles use
+    characters the outline never does, so the edge stays solid in any monospace font.
+    """
     lines = []
+    sprinkle = 0
     for row, line in enumerate(LOGO.splitlines()):
-        runs, sprinkle = [], row
-        tagline = line.find("do the thing.")
+        runs = []
+        tagline = line.find(_TAGLINE)
         for col, char in enumerate(line):
             if char == " ":
                 color = None
-            elif col >= _BUBBLE:
-                is_text = tagline != -1 and tagline <= col < tagline + len("do the thing.")
-                inside_hole = line.rstrip().endswith(")") and col > line.index("(") and col < line.rindex(")")
-                if is_text:
-                    color = "orange"
-                elif inside_hole and char in _SPRINKLES:
-                    color = "coral"
-                elif col >= _BUBBLE + 14 and row >= 6:
-                    color = "orange"
-                else:
-                    color = "gray"
-            else:
-                neighbors = line[max(col - 1, 0) : col + 2]
-                if char in _SPRINKLES and neighbors.strip() == char:
+            elif col < _BUBBLE:
+                if char in _SPRINKLES:
                     color = _SPRINKLE_COLORS[sprinkle % len(_SPRINKLE_COLORS)]
                     sprinkle += 1
                 else:
                     color = "orange"
+            elif tagline != -1 and tagline <= col < tagline + len(_TAGLINE):
+                color = "orange"
+            elif row >= _HOLE_ROW:
+                inside = "(" in line and line.index("(") < col < line.index(")")
+                color = "coral" if inside else "orange"
+            else:
+                color = "gray"
             if runs and runs[-1][1] == color:
                 runs[-1] = (runs[-1][0] + char, color)
             else:
@@ -147,16 +149,21 @@ class Progress:
 
 
 class CodeStream:
-    """Highlight Markdown code a line at a time, including split stream deltas."""
+    """Highlight streamed agent output a line at a time, including lines split across stream deltas."""
 
     def __init__(self):
+        from .highlight import AnsiRenderer, Highlighter
+
         self.pending = ""
-        self.fence = None
-        self.error = False
+        self.highlighter = Highlighter()
+        self.renderer = AnsiRenderer()
+
+    @property
+    def fence(self):
+        return self.highlighter.fence
 
     def feed(self, text, final=False):
-        import re
-
+        colored = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         self.pending += text
         output = []
         while "\n" in self.pending or (final and self.pending) or len(self.pending) >= 4096:
@@ -164,44 +171,7 @@ class CodeStream:
             if not end:
                 end = min(len(self.pending), 4096)
             line, self.pending = self.pending[:end], self.pending[end:]
-            marker = re.match(r"^\s*(`{3,}|~{3,})", line)
-            if not line.strip() or re.match(r"^\[.*\]\s*$", line):
-                self.error = False
-            if re.match(r"^\s*(?:\[Error\b|Error:|ERROR\b|Traceback \()", line):
-                self.error = True
-            if self.error:
-                output.append(paint(line, "coral"))
-            elif marker:
-                delimiter = marker[1]
-                if self.fence is None:
-                    self.fence = delimiter
-                elif delimiter[0] == self.fence[0] and len(delimiter) >= len(self.fence):
-                    self.fence = None
-                output.append(paint(line, "teal"))
-            elif self.fence:
-                # Lightweight language-neutral tokens; no lexer dependency.
-                tokens = re.split(
-                    r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|\b\d+(?:\.\d+)?\b|\b(?:class|def|return|if|else|for|while|import|from|const|let|var|function|public|private|void|new|true|false|null|None|await|async)\b|//[^\n]*|#[^\n]*)',
-                    line,
-                )
-                for index, token in enumerate(tokens):
-                    color = "gray"
-                    if index % 2:
-                        color = (
-                            "teal"
-                            if token.startswith(('"', "'"))
-                            else "orange"
-                            if token[:1].isdigit()
-                            else "teal"
-                            if token.startswith(("//", "#"))
-                            else "coral"
-                        )
-                    output.append(paint(token, color))
-            else:
-                parts = re.split(r"(`[^`\n]+`|\([^()\n]*\)|\{[^{}\n]*\}|[(){}]|(?<!\w)-?\d+(?:\.\d+)?\b)", line)
-                for index, part in enumerate(parts):
-                    color = "teal" if part.startswith("[") else "gray"
-                    if index % 2:
-                        color = "orange" if part.startswith("`") else "teal" if part[:1] in "(){}" else "coral"
-                    output.append(paint(part, color))
+            body, newline = (line[:-1], "\n") if line.endswith("\n") else (line, "")
+            styled = self.highlighter.line(body)
+            output.append((self.renderer.render(styled) if colored else body) + newline)
         return "".join(output)
