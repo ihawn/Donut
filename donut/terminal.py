@@ -11,94 +11,138 @@ import signal
 import subprocess
 import sys
 import tempfile
+from rich.text import Text
 from textual import work
 from textual.message import Message
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import ModalScreen
-from textual.widgets import (
-    Button,
-    Footer,
-    Header,
-    Input,
-    Label,
-    ListItem,
-    ListView,
-    RichLog,
-    Static,
-    TextArea,
-    LoadingIndicator,
-)
+from textual.widgets import Footer, LoadingIndicator, OptionList, RichLog, Static, TextArea
+from textual.widgets.option_list import Option
 from .config import load
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
 from .platform import process_options
 from .providers import ollama_base_url
+from .ui import COLORS, logo_segments, release_version
 
 
-class Picker(ModalScreen):
-    CSS = "Picker {align: center middle;} Picker > Vertical {width: 85%; height: 75%; border: round #17b8be; padding: 1;} Picker ListView {height: 1fr;}"
-
-    def __init__(self, title, rows):
-        super().__init__()
-        self.title_text, self.rows = title, rows
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(self.title_text)
-            yield Input(placeholder="Search…", id="search")
-            yield ListView(id="choices")
-            yield Button("Cancel", id="cancel")
-
-    def on_mount(self):
-        self.filter("")
-
-    def filter(self, term):
-        choices = self.query_one("#choices", ListView)
-        choices.clear()
-        for label, value in self.rows:
-            if term.casefold() in label.casefold():
-                item = ListItem(Label(label))
-                item.value = value
-                choices.append(item)
-
-    def on_input_changed(self, event):
-        self.filter(event.value)
-
-    def on_list_view_selected(self, event):
-        self.dismiss(event.item.value)
-
-    def on_button_pressed(self, event):
-        self.dismiss(None)
-
-    def key_escape(self):
-        self.dismiss(None)
+def hex_color(name):
+    return "#%02x%02x%02x" % COLORS[name]
 
 
-class Approval(ModalScreen):
-    CSS = "Approval {align: center middle;} Approval > Vertical {width: 80%; height: 70%; border: round #ff5e4e; padding: 1;} Approval RichLog {height: 1fr;}"
+ORANGE, CORAL, TEAL, NAVY, GRAY = (hex_color(name) for name in ("orange", "coral", "teal", "navy", "gray"))
+DIM = "#8a96a3"
 
-    def __init__(self, title, details):
-        super().__init__()
-        self.title_text, self.details = title, details
+COMMANDS = [
+    ("/plan", "Plan mode: describe work and the planner writes tickets"),
+    ("/work", "Run tickets with the worker, one fresh context each"),
+    ("/model", "Choose the account and model for this mode"),
+    ("/usage", "Show usage for each configured connection"),
+    ("/plugin", "Browse the provider's plugin commands"),
+    ("/mcp", "Show MCP server status"),
+    ("/context", "Show context usage for this conversation"),
+    ("/clear", "Start a fresh conversation; tickets are kept"),
+    ("/copy", "Copy the last answer"),
+    ("/native", "Open the provider's own client, then come back"),
+    ("/help", "List commands and keys"),
+    ("/exit", "Quit Donut"),
+]
+
+
+class Menu(Vertical):
+    """An inline list under the transcript, driven from the prompt like Claude Code's menus.
+
+    Focus never leaves the prompt: typing filters the rows, Up/Down move the highlight, Enter or Tab
+    choose, and Escape closes. It serves slash-command completion, pickers and tool approvals.
+    """
+
+    DEFAULT_CSS = f"""
+    Menu {{height: auto; max-height: 14; display: none; padding: 0 1; margin: 0 1;
+           border: round {CORAL}; border-title-color: {ORANGE}; border-title-style: bold;}}
+    Menu.-open {{display: block;}}
+    Menu OptionList {{border: none; padding: 0; background: transparent; max-height: 12;}}
+    Menu OptionList > .option-list--option-highlighted {{background: #3a2a10;}}
+    Menu OptionList > .option-list--option-hover {{background: {NAVY};}}
+    Menu #menu-empty {{color: {DIM}; display: none;}}
+    """
+
+    class Chosen(Message):
+        """row is the highlighted (label, value, description) or None when dismissed; key is how."""
+
+        def __init__(self, row, key="enter"):
+            super().__init__()
+            self.row, self.key = row, key
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.rows = []
+        self.visible_rows = []
+        self.kind = None
 
     def compose(self):
-        with Vertical():
-            yield Label(self.title_text)
-            yield RichLog(id="details", wrap=True)
-            yield Button("Allow once", id="allow", variant="success")
-            yield Button("Deny", id="deny", variant="error")
+        options = OptionList(id="menu-options")
+        options.can_focus = False
+        yield options
+        yield Static("No matches", id="menu-empty")
 
-    def on_mount(self):
-        self.query_one(RichLog).write(json.dumps(self.details, indent=2, ensure_ascii=False))
+    @property
+    def is_open(self):
+        return self.has_class("-open")
 
-    def on_button_pressed(self, event):
-        self.dismiss(event.button.id == "allow")
+    def open(self, kind, title, rows, term=""):
+        """rows: (label, value) or (label, value, description) tuples."""
+        self.kind = kind
+        self.border_title = title
+        self.rows = [row if len(row) == 3 else (row[0], row[1], "") for row in rows]
+        self.add_class("-open")
+        self.filter(term)
 
-    def key_escape(self):
-        self.dismiss(False)
+    def close(self):
+        self.kind = None
+        self.remove_class("-open")
+
+    def filter(self, term):
+        term = term.strip().casefold()
+        starts = [row for row in self.rows if row[0].casefold().startswith(term)]
+        contains = [row for row in self.rows if term in row[0].casefold() and row not in starts]
+        self.visible_rows = starts + contains
+        self.render_rows(0)
+        self.query_one("#menu-empty").display = not self.visible_rows
+        return bool(self.visible_rows)
+
+    def render_rows(self, highlighted):
+        """Redraw the rows; the highlighted one gets a pointer and brighter text, like Claude Code."""
+        width = max((len(label) for label, _, _ in self.visible_rows), default=0)
+        prompts = []
+        for index, (label, _, description) in enumerate(self.visible_rows):
+            chosen = index == highlighted
+            prompt = Text("› " if chosen else "  ", style=f"bold {CORAL}")
+            prompt.append(label.ljust(width), style=f"bold {ORANGE}" if chosen else ORANGE)
+            if description:
+                prompt.append("   " + description, style="#ffffff" if chosen else DIM)
+            prompts.append(Option(prompt))
+        options = self.query_one(OptionList)
+        options.set_options(prompts)
+        if prompts:
+            options.highlighted = highlighted
+
+    def move(self, step):
+        if self.visible_rows:
+            index = self.query_one(OptionList).highlighted or 0
+            self.render_rows((index + step) % len(self.visible_rows))
+
+    def current(self):
+        index = self.query_one(OptionList).highlighted
+        if index is None or index >= len(self.visible_rows):
+            return None
+        return self.visible_rows[index]
+
+    def on_option_list_option_selected(self, event):
+        event.stop()
+        self.render_rows(event.option_index)
+        self.post_message(self.Chosen(self.current(), "enter"))
 
 
 class Draft(TextArea):
@@ -115,6 +159,17 @@ class Draft(TextArea):
         pass
 
     async def _on_key(self, event):
+        menu = self.app.query_one(Menu)
+        if menu.is_open and event.key in ("up", "down", "enter", "tab", "escape", "ctrl+enter"):
+            event.stop()
+            event.prevent_default()
+            if event.key in ("up", "down"):
+                menu.move(-1 if event.key == "up" else 1)
+            elif event.key == "escape":
+                self.post_message(Menu.Chosen(None, "escape"))
+            else:
+                self.post_message(Menu.Chosen(menu.current(), event.key))
+            return
         if event.key in self.SEND_KEYS:
             event.stop()
             event.prevent_default()
@@ -129,7 +184,21 @@ class Draft(TextArea):
 
 class Donut(App):
     TITLE = "Donut"
-    CSS = """Screen {background: #101820;} #status {height: 2; color: #17b8be; padding-left: 1;} #transcript {height: 1fr;} #draft {height: 6; border: round #17b8be;} #response {height: auto; max-height: 20; overflow-y: auto;} #thinking {height: 1;} #send {dock: bottom; height: 3;}"""
+    ENABLE_COMMAND_PALETTE = False  # The inline slash menu replaces Textual's palette.
+    CSS = f"""
+    Screen {{background: #101820;}}
+    #transcript {{height: 1fr; padding: 0 1; background: #101820; scrollbar-size-vertical: 1;
+                   scrollbar-background: #101820; scrollbar-color: {CORAL} 50%; scrollbar-color-hover: {ORANGE};}}
+    #response {{height: auto; max-height: 20; overflow-y: auto; padding: 0 1;}}
+    #thinking {{height: 1; color: {ORANGE};}}
+    #draft {{height: auto; min-height: 3; max-height: 10; margin: 0 1; border: round {CORAL} 60%;
+             background: #101820;}}
+    #draft:focus {{border: round {ORANGE};}}
+    #status {{height: 1; padding: 0 2;}}
+    Footer {{background: #101820;}}
+    Footer FooterKey .footer-key--key {{color: {ORANGE}; background: #101820; text-style: bold;}}
+    Footer FooterKey .footer-key--description {{color: {DIM};}}
+    """
     BINDINGS = [
         Binding("enter", "send", "Send"),
         # priority=True: the editor binds ctrl+c to copy, which would otherwise swallow the cancel key.
@@ -159,36 +228,110 @@ class Donut(App):
         self.child = None
         self.turn_text = ""
         self.last_answer = ""
+        self.picking = None
 
     def compose(self):
-        yield Header()
-        yield Static(id="status")
         yield RichLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
         yield Static(id="response")
         yield LoadingIndicator(id="thinking")
-        yield Draft(id="draft", soft_wrap=True, show_line_numbers=False)
-        yield Button("Send · Enter", id="send")
+        yield Menu(id="menu")
+        yield Draft(
+            id="draft",
+            soft_wrap=True,
+            show_line_numbers=False,
+            placeholder="Describe what to plan, or type / for commands",
+        )
+        yield Static(id="status")
         yield Footer()
 
     def on_mount(self):
+        self.welcome()
         self.status("Ready")
-        self.say("Your planning model writes the tickets. Your worker model takes them one at a time. Do the thing.")
-        self.say(
-            "Use /plan or /work to choose a mode. /help lists commands. Enter sends; Shift+Enter, Alt+Enter or Ctrl+J inserts a newline."
-        )
         if not self.config.get("aliases"):
-            self.say("No accounts configured. Exit and run donut setup.")
+            self.say(Text("No accounts configured. Exit and run donut setup.", style=CORAL))
         self.query_one("#thinking", LoadingIndicator).display = False
-        self.query_one(TextArea).focus()
+        self.query_one(Draft).focus()
+
+    def welcome(self):
+        """The logo and a short orientation, written at the top of the transcript when Donut opens."""
+        for runs in logo_segments():
+            line = Text()
+            for text, color in runs:
+                line.append(text, style=hex_color(color) if color else None)
+            self.say(line)
+        title = Text("  DONUT", style=f"bold {ORANGE}")
+        title.append("  /  " + release_version(), style=CORAL)
+        title.append("   " + str(self.project), style=DIM)
+        self.say(title)
+        self.say(Text("  The planner writes the tickets. The worker takes them one at a time.", style=GRAY))
+        hint = Text("  ")
+        for key, description in (
+            ("/plan", "write tickets"),
+            ("/work", "build them"),
+            ("/", "commands"),
+            ("Shift+Enter", "newline"),
+        ):
+            hint.append(key, style=f"bold {ORANGE}")
+            hint.append(" " + description + "   ", style=DIM)
+        self.say(hint)
+        self.say("")
 
     def status(self, activity):
         profile = self.profiles[self.mode]
-        self.query_one("#status", Static).update(
-            f"{self.mode.upper()}  ·  {self.selected[self.mode] or 'unconfigured'}  ·  {profile.get('model') or 'provider default'}  ·  {activity}"
-        )
+        line = Text()
+        line.append(f" {self.mode.upper()} ", style=f"bold #101820 on {ORANGE if self.mode == 'plan' else CORAL}")
+        line.append(f"  {self.selected[self.mode] or 'unconfigured'}", style=f"bold {ORANGE}")
+        line.append(f"  ·  {profile.get('model') or 'provider default'}", style=GRAY)
+        line.append(f"  ·  {activity}", style=CORAL if activity != "Ready" else DIM)
+        self.query_one("#status", Static).update(line)
 
-    def say(self, text):
-        self.query_one(RichLog).write(text)
+    def say(self, text, style=None):
+        self.query_one(RichLog).write(Text(text, style=style) if style and isinstance(text, str) else text)
+
+    async def choose(self, title, rows):
+        """Show rows in the inline menu and wait for a choice. Returns the chosen value, or None."""
+        if not rows:
+            return None
+        menu = self.query_one(Menu)
+        future = asyncio.get_running_loop().create_future()
+        self.picking = future
+        self.query_one(Draft).clear()
+        menu.open("pick", title, rows)
+        try:
+            return await future
+        finally:
+            self.picking = None
+            menu.close()
+            self.query_one(Draft).clear()
+
+    def slash_rows(self):
+        rows = [(name, name, description) for name, description in COMMANDS]
+        session = self.sessions.get((self.selected[self.mode], self.profiles[self.mode].get("model")))
+        if isinstance(session, ClaudeSession):
+            for command in session.info.get("commands", []):
+                name = command.get("name") if isinstance(command, dict) else command
+                if isinstance(name, str) and "/" + name.lstrip("/") not in {row[0] for row in rows}:
+                    description = command.get("description", "") if isinstance(command, dict) else ""
+                    rows.append(("/" + name.lstrip("/"), "/" + name.lstrip("/"), (description or "")[:80]))
+        return rows
+
+    def on_menu_chosen(self, event):
+        menu = self.query_one(Menu)
+        draft = self.query_one(Draft)
+        if menu.kind == "pick":
+            if self.picking and not self.picking.done():
+                self.picking.set_result(event.row[1] if event.row else None)
+            return
+        menu.close()
+        if event.row is None:
+            return
+        command = event.row[1]
+        if event.key == "tab":
+            draft.load_text(command + " ")
+            draft.move_cursor(draft.document.end)
+            return
+        draft.clear()
+        self.execute(command)
 
     def event(self, kind, text):
         if kind == "text":
@@ -197,19 +340,17 @@ class Donut(App):
             self.turn_text += text
             self.query_one("#response", Static).update(RenderedMarkdown(self.turn_text))
         elif kind == "error":
-            self.say("Error: " + str(text))
+            self.say("Error: " + str(text), CORAL)
         else:
             self.status(str(text))
 
     async def approve(self, name, details):
-        answer = asyncio.get_running_loop().create_future()
-
-        def respond(value):
-            if not answer.done():
-                answer.set_result(bool(value))
-
-        self.push_screen(Approval(name, details), respond)
-        return await answer
+        summary = json.dumps(details, indent=2, ensure_ascii=False)
+        if len(summary) > 1500:
+            summary = summary[:1500] + "\n…"
+        self.say(Text("Permission requested: " + name, style=f"bold {CORAL}"))
+        self.say(Text(summary, style=GRAY))
+        return bool(await self.choose("Allow " + name + "?", [("Allow once", True), ("Deny", False)]))
 
     async def session(self, alias, profile):
         key = (alias, profile.get("model"))
@@ -239,36 +380,17 @@ class Donut(App):
         return self.sessions[key]
 
     def on_text_area_changed(self, event):
-        if event.text_area.text == "/" and not self.busy:
-            self.run_worker(self.slash_menu(), group="slash-menu", exclusive=True)
-
-    async def slash_menu(self):
-        names = [
-            "/plan",
-            "/work",
-            "/model",
-            "/usage",
-            "/plugin",
-            "/mcp",
-            "/context",
-            "/clear",
-            "/copy",
-            "/native",
-            "/help",
-            "/exit",
-        ]
-        try:
-            session = await self.session(self.selected[self.mode], self.profiles[self.mode])
-            if isinstance(session, ClaudeSession):
-                for command in session.info.get("commands", []):
-                    name = command.get("name") if isinstance(command, dict) else command
-                    if isinstance(name, str):
-                        names.append("/" + name.lstrip("/"))
-        except Exception:
-            pass
-        selected = await self.push_screen_wait(Picker("Commands", [(name, name) for name in dict.fromkeys(names)]))
-        if selected:
-            self.query_one(TextArea).load_text(selected + " ")
+        menu = self.query_one(Menu)
+        text = event.text_area.text
+        if menu.kind == "pick":
+            menu.filter(text)
+        elif text.startswith("/") and not any(c.isspace() for c in text) and not self.busy:
+            if not menu.is_open:
+                menu.open("slash", "Commands", self.slash_rows())
+            if not menu.filter(text):
+                menu.close()
+        elif menu.is_open:
+            menu.close()
 
     def action_send(self):
         if len(self.screen_stack) > 1:
@@ -281,10 +403,6 @@ class Donut(App):
         if text:
             editor.clear()
             self.execute(text)
-
-    def on_button_pressed(self, event):
-        if event.button.id == "send":
-            self.action_send()
 
     def on_draft_submitted(self, event):
         self.action_send()
@@ -301,8 +419,11 @@ class Donut(App):
         self.query_one(RichLog).clear()
 
     async def action_cancel(self):
-        if isinstance(self.screen, Approval):
-            self.screen.dismiss(False)
+        menu = self.query_one(Menu)
+        if self.picking and not self.picking.done():
+            self.picking.set_result(None)
+        elif menu.is_open:
+            menu.close()
         if self.active:
             await self.active.interrupt()
         if self.child and self.child.returncode is None:
@@ -338,7 +459,7 @@ class Donut(App):
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            self.say("Error: " + str(error))
+            self.say("Error: " + str(error), CORAL)
         finally:
             self.active = None
             self.busy = False
@@ -356,23 +477,21 @@ class Donut(App):
                 choice = (
                     " ".join(args)
                     if args
-                    else await self.push_screen_wait(
-                        Picker(
-                            "Work tickets",
-                            [
-                                ("Next ticket", "next 1"),
-                                ("Next 3 tickets", "next 3"),
-                                ("All eligible tickets", "next all"),
-                                ("Next ticket, git checkpoint after it", "next 1 checkpoint"),
-                                ("All eligible tickets, git checkpoint after each", "next all checkpoint"),
-                            ],
-                        )
+                    else await self.choose(
+                        "Work tickets",
+                        [
+                            ("Next ticket", "next 1", "one ticket in a fresh context"),
+                            ("Next 3 tickets", "next 3", "up to three, one fresh context each"),
+                            ("All eligible tickets", "next all", "until the queue is empty or blocked"),
+                            ("Next ticket + checkpoint", "next 1 checkpoint", "git commit after it"),
+                            ("All tickets + checkpoints", "next all checkpoint", "git commit after each"),
+                        ],
                     )
                 )
                 if choice:
                     await self.work_tickets(choice)
             else:
-                self.say("Planning mode. Describe what to plan.")
+                self.say("Planning mode. Describe what to plan.", ORANGE)
         elif name == "/model":
             await self.models()
         elif name == "/usage":
@@ -419,9 +538,7 @@ class Donut(App):
                         for item in data
                         if isinstance(item, dict)
                     ]
-                    selected = await self.push_screen_wait(
-                        Picker("Claude plugin commands · /native for management", rows)
-                    )
+                    selected = await self.choose("Claude plugin commands · /native for management", rows)
                     if selected:
                         self.query_one(TextArea).load_text(selected + " ")
                 else:
@@ -429,7 +546,7 @@ class Donut(App):
                     for market in data.get("marketplaces", []):
                         for plugin in market.get("plugins", []):
                             rows.append((plugin.get("name", "?") + " · " + str(plugin.get("installed", False)), plugin))
-                    selected = await self.push_screen_wait(Picker("Codex plugins · /native for management", rows))
+                    selected = await self.choose("Codex plugins · /native for management", rows)
                     if selected:
                         self.say(json.dumps(selected, indent=2, ensure_ascii=False))
             else:
@@ -458,15 +575,15 @@ class Donut(App):
             "Read skills/donut-planner/SKILL.md. Plan only: research and write scoped tickets; do not implement or commit. Respect on_hold and blocked lanes and reserve their identities. Give a brief overview when finished; Donut lists created tickets. User request:\n"
             + text
         )
-        self.say("You: " + text)
+        self.say(Text("> " + text, style=f"bold {ORANGE}"))
         self.turn_text = ""
         await self.active.query(prompt)
         self.answer()
         created = [path for key, path in ticket_snapshot(self.project).items() if key not in before]
-        self.say("Tickets created: " + str(len(created)))
+        self.say("Tickets created: " + str(len(created)), CORAL)
         for path in sorted(created):
-            self.say("  " + path.relative_to(self.project).as_posix())
-        self.say("PLANNING COMPLETE · /work next 1")
+            self.say("  " + path.relative_to(self.project).as_posix(), GRAY)
+        self.say("PLANNING COMPLETE · /work next 1", f"bold {ORANGE}")
 
     async def models(self):
         rows = []
@@ -495,7 +612,7 @@ class Donut(App):
             except Exception as error:
                 self.say(f"{alias}: model discovery failed: {error}")
         if rows:
-            selected = await self.push_screen_wait(Picker("Select account and model for " + self.mode, rows))
+            selected = await self.choose("Account and model for " + self.mode, rows)
             if selected:
                 self.selected[self.mode], self.profiles[self.mode] = selected
 
@@ -552,7 +669,10 @@ class Donut(App):
                 self.say(line.decode("utf-8", errors="replace").rstrip())
             code = await self.child.wait()
             self.child = None
-            self.say("WORK COMPLETE" if code == 0 else f"Worker stopped with exit code {code}; inspect results above.")
+            if code == 0:
+                self.say("WORK COMPLETE", f"bold {ORANGE}")
+            else:
+                self.say(f"Worker stopped with exit code {code}; inspect results above.", CORAL)
 
     async def native(self):
         profile = self.profiles[self.mode]

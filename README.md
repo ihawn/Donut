@@ -98,7 +98,7 @@ flowchart LR
 |---|---|---|
 | The planner reads your project and writes tickets with exact files, steps, tests and acceptance criteria. | Each ticket gets its own process, its own context, a Verify command and completion notes. | Streamed output, a per-run summary table, and results and logs under `~/.local/state/donut`. |
 
-The interactive terminal wraps all of this with a searchable command menu, model picker, approval dialogs and rendered Markdown. **Enter** sends. **Shift+Enter**, **Alt+Enter** or **Ctrl+J** insert a newline. **Ctrl+C** cancels the running turn and **Ctrl+Q** quits. For anything a provider only offers in its own client, `/native` drops you into it and brings you back.
+The interactive terminal wraps all of this with an inline slash-command menu (type `/`, arrow to a command, press Enter), model and ticket pickers, permission prompts and rendered Markdown. **Enter** sends. **Shift+Enter**, **Alt+Enter** or **Ctrl+J** insert a newline. **Ctrl+C** cancels the running turn and **Ctrl+Q** quits. For anything a provider only offers in its own client, `/native` drops you into it and brings you back.
 
 > Subjective acceptance checks stay yours to verify, and a failed or blocked ticket is reported, never papered over. Only run unattended workers in projects you trust and have under version control.
 

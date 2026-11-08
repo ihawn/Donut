@@ -47,7 +47,7 @@ class UITests(unittest.TestCase):
         self.assertIn("do the thing", output)
         self.assertIn("1.2.3", output)
         self.assertIn("donut setup", output)
-        self.assertLessEqual(max(map(len, LOGO.splitlines())), 48)
+        self.assertLessEqual(max(map(len, LOGO.splitlines())), 72)  # Fits an 80-column terminal with its indent.
 
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()

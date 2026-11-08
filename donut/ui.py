@@ -14,20 +14,63 @@ COLORS = {
 }
 
 
-LOGO = r'''          .----------------.
-          |  do the thing  |
-          '----.  .--------'
-                \/
-       .-""""-.
-     .'        '.
-    /    .--.    \
-   ;    /    \    ;
-   |    \    /    |       .-""-.
-   ;     '--'     ;      /      \
-    \            /       \      /
-     '.        .'         '-..-'
-       '-....-'
-'''
+LOGO = r"""
+         _.-~~~~~~~~~~~~-._               .-------------------.
+     .-~'     '   .   ,    '~-.           |   do the thing.   |
+   .'   .   ,   *   .   '   o  '.         '---.  .------------'
+  /   ,   .-~~~~~~~~~~~~-.    *  \            | /
+ ;  *    /                \       ;           |/
+ |    .  |                |   '   |
+ ;  '    \                /       ;                   .-~~-.
+  \   o   '-.__________.-'    *  /                   ( .  ' )
+   '.   *   '   .   ,   *   .  .'                     '-..-'
+     '-._     '   .   ,    _.-'
+         '~-.__________.-~'
+"""[1:]
+
+# Columns where the speech bubble starts; everything to its left is the donut.
+_BUBBLE = 38
+_SPRINKLE_COLORS = ("coral", "teal", "coral", "gray", "coral")
+_SPRINKLES = set("*.,'o")
+
+
+def logo_segments():
+    """The logo as lines of (text, color) runs, shared by the ANSI printer and the Textual terminal."""
+    lines = []
+    for row, line in enumerate(LOGO.splitlines()):
+        runs, sprinkle = [], row
+        tagline = line.find("do the thing.")
+        for col, char in enumerate(line):
+            if char == " ":
+                color = None
+            elif col >= _BUBBLE:
+                is_text = tagline != -1 and tagline <= col < tagline + len("do the thing.")
+                inside_hole = line.rstrip().endswith(")") and col > line.index("(") and col < line.rindex(")")
+                if is_text:
+                    color = "orange"
+                elif inside_hole and char in _SPRINKLES:
+                    color = "coral"
+                elif col >= _BUBBLE + 14 and row >= 6:
+                    color = "orange"
+                else:
+                    color = "gray"
+            else:
+                neighbors = line[max(col - 1, 0) : col + 2]
+                if char in _SPRINKLES and neighbors.strip() == char:
+                    color = _SPRINKLE_COLORS[sprinkle % len(_SPRINKLE_COLORS)]
+                    sprinkle += 1
+                else:
+                    color = "orange"
+            if runs and runs[-1][1] == color:
+                runs[-1] = (runs[-1][0] + char, color)
+            else:
+                runs.append((char, color))
+        lines.append(runs)
+    return lines
+
+
+def painted_logo():
+    return "\n".join("".join(paint(text, color) if color else text for text, color in runs) for runs in logo_segments())
 
 
 def paint(text, color="teal"):
@@ -39,8 +82,8 @@ def paint(text, color="teal"):
 
 def banner():
     print(
-        paint(" ◉ ", "orange")
-        + paint("DONUT", "teal")
+        paint(" ◉ ", "coral")
+        + paint("DONUT", "orange")
         + paint(
             "  Your planning model writes the tickets. Your worker model takes them one at a time. Do the thing.",
             "gray",
@@ -59,17 +102,17 @@ def release_version():
 
 def welcome(installed=False):
     release = release_version()
-    print(LOGO)
-    print(paint("  DONUT", "teal") + paint("  /  " + release, "orange"))
-    print("  Your planning model writes the tickets. Your worker model takes them one at a time. Do the thing.")
-    print(paint("  " + "-" * 38, "gray"))
+    print(painted_logo())
+    print(paint("  DONUT", "orange") + paint("  /  " + release, "coral"))
+    print(paint("  Your planning model writes the tickets. Your worker model takes them one at a time.", "gray"))
+    print(paint("  " + "-" * 38, "coral"))
     if installed:
-        print(paint("  [OK] Installation complete.", "teal"))
+        print(paint("  [OK] Installation complete.", "orange"))
         print("  Open a new terminal in your project, then:")
-        print(paint("    donut setup", "orange"))
+        print(paint("    donut setup", "coral"))
         print("  Explore commands: donut --help")
     else:
-        print(paint("  SETUP  /  Local or hosted. Your choice.", "teal"))
+        print(paint("  SETUP  /  Local or hosted. Your choice.", "orange"))
     print()
 
 

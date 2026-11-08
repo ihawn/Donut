@@ -4,7 +4,9 @@ Everything the [README](../README.md) leaves out: the terminal, setup, planning 
 
 ## Interactive terminal
 
-Run `donut` in your project. The terminal supports multiline editing, paste, mouse-operated searchable menus, rendered Markdown/code, streaming responses, thinking indicators, approval dialogs and clipboard copy (`/copy`, subject to terminal support). Enter sends. Shift+Enter, Alt+Enter or Ctrl+J insert a newline (Ctrl+Enter also sends in terminals that can tell it apart from Enter, such as kitty, WezTerm, Ghostty and Windows Terminal; most others cannot, which is why Enter is the send key). Ctrl+C cancels the running turn and Ctrl+Q exits. F2 opens models; F3 switches modes. Type `/` for the searchable command menu.
+Run `donut` in your project. The terminal supports multiline editing, paste, mouse-operated searchable menus, rendered Markdown/code, streaming responses, thinking indicators, approval dialogs and clipboard copy (`/copy`, subject to terminal support). Enter sends. Shift+Enter, Alt+Enter or Ctrl+J insert a newline (Ctrl+Enter also sends in terminals that can tell it apart from Enter, such as kitty, WezTerm, Ghostty and Windows Terminal; most others cannot, which is why Enter is the send key). Ctrl+C cancels the running turn and Ctrl+Q exits. F2 opens models; F3 switches modes.
+
+Type `/` and a command list appears inline above the prompt, the way Claude Code does it. Keep typing to filter, Up and Down move the highlight, Enter runs the highlighted command, Tab completes it so you can add arguments, and Escape closes the list. Typing a space closes it too, so `/work next 3` followed by Enter sends the whole line. Pickers such as `/model` and `/work`, and tool permission prompts, use the same inline list instead of opening a separate window.
 
 - `/plan` selects planning mode. Claude and Codex use persistent native sessions; worker tickets retain fresh contexts.
 - `/work` opens next-ticket/count/all controls; `/work next 1` runs one ticket. Append `checkpoint` (`/work next all checkpoint`) to commit the working tree after every ticket.
