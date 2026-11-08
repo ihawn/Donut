@@ -24,12 +24,10 @@ Big models are great at understanding a codebase and terrible value for typing o
 ## Install
 
 ```sh
-# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/ihawn/Donut/main/install.sh | sh
 ```
 
 ```powershell
-# Windows (PowerShell)
 curl.exe -fsSL https://raw.githubusercontent.com/ihawn/Donut/main/install.ps1 -o "$env:TEMP\donut-install.ps1"
 if ($LASTEXITCODE -eq 0) { powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\donut-install.ps1" }
 ```
