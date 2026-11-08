@@ -53,7 +53,7 @@ jobs:
           cd "$RUNNER_TEMP/donut-project"
           "$RUNNER_TEMP/donut-smoke/bin/donut" --help
           "$RUNNER_TEMP/donut-smoke/bin/donut" init
-          test -f .qwen/skills/swim-lane-worker/SKILL.md
+          test -f .donut/skills/swim-lane-worker/SKILL.md
           test -f skills/donut-planner/SKILL.md
           test -f swim_lanes/to_do/.gitkeep
       - name: Create SHA-256 checksums

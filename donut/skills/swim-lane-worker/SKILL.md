@@ -5,7 +5,7 @@ description: Implement scoped tickets from swim_lanes, verify their tests, recor
 
 # Swim-lane worker
 
-Paths are relative to the project root containing QWEN.md. Follow that project's rules and the assigned ticket. Do not load planner instructions from .claude/, .cursor/, or CLAUDE.md.
+Paths are relative to the project root (the directory containing `swim_lanes/`). Follow the project's own instructions file (QWEN.md, CLAUDE.md or AGENTS.md, whichever your agent reads) and the assigned ticket. Do not load planner instructions from `.claude/`, `.cursor/` or `skills/donut-planner/`.
 
 ## Pick work
 
@@ -13,6 +13,7 @@ Paths are relative to the project root containing QWEN.md. Follow that project's
 - “Next task” means finish one in-progress task first; otherwise pick the lowest-numbered eligible ticket from swim_lanes/to_do/.
 - “All” means recheck the queue after each ticket. Do not retry tasks blocked during this run; continue independent tasks, skipping blocked dependencies.
 - Tickets have **Slug:** `name` and **Depends on:** `other-slug`, … or None. Dependencies must be in swim_lanes/done/ before starting.
+- A ticket may carry **Verify:** `command`. Donut runs that command itself after you move the ticket to done; if it fails, Donut moves the ticket to blocked/. Run it yourself first and never edit or remove the Verify line.
 - Keep the complete filename unchanged. Move to_do → in_progress before editing; in_progress → done only after verification.
 
 ## On-hold tickets

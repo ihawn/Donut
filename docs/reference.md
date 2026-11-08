@@ -1,0 +1,154 @@
+# Donut reference
+
+Everything the [README](../README.md) leaves out: the terminal, setup, planning and working, ticket format, output, releases and contributing.
+
+## Interactive terminal
+
+Run `donut` in your project. The terminal supports multiline editing, paste, mouse-operated searchable menus, rendered Markdown/code, streaming responses, thinking indicators, approval dialogs and clipboard copy (`/copy`, subject to terminal support). Enter sends. Shift+Enter, Alt+Enter or Ctrl+J insert a newline (Ctrl+Enter also sends in terminals that can tell it apart from Enter, such as kitty, WezTerm, Ghostty and Windows Terminal; most others cannot, which is why Enter is the send key). Ctrl+C cancels the running turn and Ctrl+Q exits. F2 opens models; F3 switches modes. Type `/` for the searchable command menu.
+
+- `/plan` selects planning mode. Claude and Codex use persistent native sessions; worker tickets retain fresh contexts.
+- `/work` opens next-ticket/count/all controls; `/work next 1` runs one ticket. Append `checkpoint` (`/work next all checkpoint`) to commit the working tree after every ticket.
+- `/model` discovers models for each configured connection and lists the account alias first, including separate `claude` and `claude-personal` entries when configured. Planner and worker choices are independent. Provider changes start a distinct provider conversation.
+- `/usage` shows each connection's available usage. Codex account rate limits are queried from its app server. Claude exposes session tokens and reported cost here; subscription quotas require native Claude `/usage`. Unavailable figures are identified explicitly.
+- `/plugin`, `/mcp`, and `/context` inspect selected-provider capabilities. Claude plugin slash commands are discovered from the native engine and can be invoked directly. Codex uses its native plugin inventory and MCP status interfaces.
+- `/native` suspends Donut and opens the selected provider's original interactive client, preserving its account/model selection. Use it for native plugin installation, provider-only built-ins, and interactions that Donut cannot yet render. Exit the client to return to Donut.
+- `/clear` starts a fresh conversation for the selected account/model. `/copy` copies the last answer. `/exit` closes the terminal.
+
+**Compatibility boundary:** this release supplies a shared terminal and provider sessions; it does not reproduce every upstream command, plugin manager, interaction type, or clipboard behavior. Unsupported Codex interaction requests are rejected visibly rather than auto-approved. Native-only features remain accessible through `/native`. Qwen/local turns use Qwen's native saved-session mechanism; API-compatible connections use Qwen as their agent engine. Legacy CLI modes below remain supported.
+
+## How the loop works
+
+```mermaid
+flowchart LR
+    A[Your request] --> B[Planner: local or hosted]
+    B --> C[To do: scoped tickets]
+    C --> D[Worker: fresh context]
+    D --> E{Checks pass?}
+    E -->|Yes| F[Done + completion notes]
+    E -->|Blocked| G[Record blocker]
+    F --> C
+    G --> H[Continue independent tickets]
+    H --> C
+    classDef orange fill:#FFA818,color:#124D63,stroke:#124D63
+    classDef teal fill:#17B8BE,color:#124D63,stroke:#124D63
+    classDef coral fill:#FF5E4E,color:#124D63,stroke:#124D63
+    class A,B orange
+    class C,D,E,F teal
+    class G,H coral
+```
+
+> **You stay in control.** Model aliases and credentials stay outside the repo. Existing project instructions are preserved. A failed or blocked task is reported; subjective acceptance checks stay yours to verify.
+
+## Setup
+
+`donut setup` uses numbered choices and three steps: choose a planner, add worker models, and choose a default worker. Existing aliases are shown and preserved; local models can be selected together by number. It walks through:
+
+1. Choosing a local or hosted planning/orchestration provider. Select `ollama` for a local model with no cloud login, or a hosted provider. Claude/Codex can open their own login flow or reuse an existing login. Grok/compatible endpoints use a named environment variable containing an API key; Donut never asks you to paste that key into its configuration.
+2. Naming aliases. Each alias selects its engine, model, and optional compatible endpoint. A hosted model can be the worker too.
+3. Discovering registered Ollama models and model files under `~/Models`, `~/Downloads`, `~/.cache/huggingface/hub`, `~/.lmstudio/models`, and `~/.ollama/models`. `--scan PATH` instead scans a directory you choose. It inspects filenames, not personal document contents.
+4. Optionally importing a discovered GGUF into Ollama. Safetensors directories are reported; serve these with a compatible runtime before configuring an endpoint. A raw weight file is not necessarily a runnable coding model.
+5. Installing project instructions and selecting the default worker.
+
+Setup asks whether each cloud alias may execute tools without approval. Local aliases retain the original Qwen worker's unattended mode. Only run unattended agents in projects you trust. Without automatic approval, a provider may refuse commands it cannot approve non-interactively; Donut reports the failure instead of claiming completion.
+
+```sh
+donut models
+donut discover --scan /path/to/models
+donut setup -p ../another-project
+```
+
+Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.config/donut/config.json`, mode 0600). It contains aliases and **environment variable names**, never API key values. Provider CLIs own their own OAuth credentials. Claude setup explicitly selects its login/configuration folder (for example `~/.claude` or `~/.claude-personal`); that folder is used for both login and execution. Setup also offers simple shell aliases from `.zshrc`, `.bashrc`, and `.bash_profile`, including `claude-personal` defined with `CLAUDE_CONFIG_DIR`. Selecting one imports its login folder without executing shell startup code. Existing Donut aliases take precedence. Shell functions, aliases with extra flags or commands, and dynamically constructed paths are not imported; use the provider/login-folder choices for those. Naming a new Donut alias alone does not select an account. Subscription login and API billing are different; Grok uses API authentication here, not a browser-chat subscription.
+
+## Plan and build
+
+```sh
+donut --plan                     # interactive session
+donut -m qwen --plan "Add wall jumping"  # local orchestrator
+donut -m qwen-faster --work next 3
+donut -m qwen --work
+donut -m cloud-worker --work next 1 --project ../another-project
+```
+
+Setup ends with **SETUP COMPLETE** and **Try running `donut`**. Run it to open the terminal, then choose `/plan`. The older `donut --plan` prompt remains available for compatibility. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, `on_hold/`, `blocked/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+
+Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
+
+`donut --work next 1` processes exactly one eligible ticket (or none when no ticket is eligible), then prints the run summary. Use `donut --work next 3` for up to three tickets or `donut --work next all` for all eligible tickets. Each ticket gets a fresh worker context. Bare `donut --work` still runs all eligible tickets, and the shorter `donut --work 3` form remains supported. The older `donut plan "request"` and `donut do next COUNT` forms remain compatible.
+
+Add `--checkpoint` to commit the working tree after every ticket (`donut --work next all --checkpoint`). The project must be a git repository; each commit is `donut: done NNN_slug.md` or `donut: blocked NNN_slug.md`, so a bad ticket is one `git revert` away and a good run reads as a clean history. Without the flag nothing is committed, but each record in `results.json` still lists the files the ticket changed when the project is under git.
+
+`-m` / `--model` accepts a configured alias for either planning or execution. The planner/orchestrator and worker may be the same local model, different local models, or hosted models. Setup stores a default planner separately from the default worker. `-p` / `--project` accepts an absolute or relative directory and defaults to the current directory. Flags work before or after the subcommand. `donut -h` lists commands.
+
+`donut init` and `donut add-skills` install skills without login/setup. Existing instructions and skills are kept. They create:
+
+- `swim_lanes/{to_do,in_progress,on_hold,blocked,done}/`
+- `.donut/skills/swim-lane-worker/SKILL.md`, connected through `QWEN.md` (projects set up before 0.3 keep their existing `.qwen/skills/swim-lane-worker/`; Donut uses whichever exists)
+- `skills/donut-planner/SKILL.md`, explicitly loaded by `donut --plan` (including Codex), plus Claude/Cursor skill copies
+- Relevant locally available Unity skills when a Unity project is detected
+
+No game-specific rules are copied from another project. If this project has `skills/project-rules/SKILL.md`, its worker import is connected. Planner instructions are deliberately not placed in `AGENTS.md` or `.agents/skills`, since Qwen also reads those locations.
+
+## Execution and output
+
+Each ticket gets a fresh process with no resume/continue flag. Existing in-progress work is considered first, then the lowest numbered eligible ticket. Dependencies use `**Slug:**` and `**Depends on:**` metadata. A blocked ticket counts toward the requested number; its dependent tasks are skipped, while independent tasks can continue. `all` rechecks the queue, including newly added tickets. Process failure or an invalid lane transition stops the batch.
+
+### Ticket metadata
+
+Donut reads three `**Name:** value` lines from each ticket (a leading `-` bullet is fine):
+
+- `**Slug:**` identifies the ticket across lanes. If it is missing, the slug is taken from the filename (`012_20240101-1200_my-slug.md` becomes `my-slug`) and a warning is printed.
+- `**Depends on:**` lists slugs, backtick-quoted or bare and comma-separated, or `None`. A missing line means no dependencies.
+- `**Verify:**` is an optional shell command. After the worker exits successfully and leaves the ticket in `done/`, Donut runs it from the project root with a fifteen-minute limit. On a non-zero exit Donut appends `BLOCKED:` and the output tail to the ticket, moves it to `blocked/`, and skips its dependents. The command and its output are saved as `NNN.verify.log` next to the run log.
+
+A malformed ticket never stops the batch. When no more tickets are eligible, Donut prints a `Queue:` line for every unrun ticket in `to_do/` and `in_progress/` saying what it is waiting for: a dependency that is not done, one that is on hold or blocked, an unknown slug, or missing metadata.
+
+Donut uses an orange/navy/coral/teal/gray palette, a loading spinner while the agent is silent, and live emitted text, reasoning, tools, and results. Redirected output has no color and prints periodic status lines. Set `NO_COLOR=1` to disable colors. Some providers expose reasoning summaries or only complete events; Donut cannot display reasoning they do not expose.
+
+The legacy `qwen build next …` and `qwen-faster build next …` batch entry point can also use this runner through the installed `qwen-build-next` compatibility command.
+
+Worker output remains fully streamed, including available thinking and tool details. Planner output uses the compact presentation described above; its full transcript and raw events remain in the run logs.
+
+Streamed worker output labels identify the configured model (or the provider-reported model when available). Fenced code and inline snippets are highlighted using the Donut palette. In thinking and prose, backtick snippets are orange, numbers are coral, parentheses/braces are teal, and error messages are coral/red; code lines are buffered across token chunks for consistent coloring. `NO_COLOR` and redirected output remain plain, as do saved logs. The lightweight highlighter handles common tokens rather than full language grammars.
+
+The final summary is a compact Task / Result / Note table covering only tickets attempted during this run. It hides summary reasoning and excludes untouched queue entries. It is produced by another fresh agent context using completion notes. Donut checks lane transitions and runs each ticket's Verify command; it does not judge model-authored tests beyond their exit code. Human checks remain human checks. Codex's summary context is read-only; Claude disables tools and Qwen sets its tool-call budget to zero.
+
+Run logs/results live outside the repo under `$XDG_STATE_HOME/donut` (default `~/.local/state/donut`). They can contain project content and tool output, so treat them as private. Ctrl-C terminates the current process group and prevents the next ticket from starting. Re-running resumes unfinished work in a fresh context. Per-project locks stop overlapping Donut batches, but cannot stop manually launched agents or the older Qwen wrapper.
+
+For Ollama, Donut loads the chosen model with a one-hour keepalive before a batch and refreshes it afterwards. Other loaded models are left alone unless the alias was set up with "unload other Ollama models" (stored as `unload_others` in the alias), which is useful on a single GPU and disruptive on a shared server. The server is `http://127.0.0.1:11434` unless `OLLAMA_HOST` is set, the same variable the Ollama CLI reads. Configure `OLLAMA_KEEP_ALIVE=1h` on the **Ollama server** for the same timeout on requests made by provider clients and on interrupted runs. Donut does not rewrite OS service configuration. Hosted model residency is controlled by the provider.
+
+## Development / verification
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -e . ruff
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+python3 scripts/check_provider_flags.py     # needs the real provider CLIs on PATH
+```
+
+Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, verify commands, checkpoints, process errors, locking, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction. `ruff` enforces formatting and basic lint in CI.
+
+Because the unit tests never touch a real provider, `scripts/check_provider_flags.py` installs nothing but checks that every flag Donut passes to `codex`, `claude` and `qwen` is still documented by the installed CLI. The [Provider contract](https://github.com/ihawn/Donut/actions/workflows/provider_contract.yml) workflow runs it weekly, on demand, and on pull requests that touch `providers.py`, with the current npm releases of all three CLIs. It never blocks a release.
+
+macOS, Windows and Linux are supported and tested in CI, including the shell/PowerShell installers. No remote accounts, API keys, user configuration, or run logs belong in this repository.
+
+## Releases
+
+The [Release workflow](https://github.com/ihawn/Donut/actions/workflows/release.yml) runs the complete macOS/Windows/Linux unit-test and installer matrix, builds a wheel and source distribution, checks package metadata, and smoke-tests the installed wheel in a clean directory (including the bundled skills).
+
+Every merge into `main` triggers this pipeline and publishes a GitHub Release after the checks pass. Direct pushes to `main` also trigger it. Pull requests run unit tests without publishing. Manual workflow runs validate and produce downloadable artifacts without publishing.
+
+The first release uses `version` in `pyproject.toml`. Subsequent releases automatically increment the highest stable release's patch version. To start a new minor or major series, raise the version in `pyproject.toml` in your PR; it serves as the minimum release version. CI stamps the selected version into the built packages without making a bot commit to the repository. Re-running an already tagged commit reuses its version.
+
+Successful main runs create the version tag and publish the wheel, source distribution and `SHA256SUMS` using GitHub's built-in token; no additional release secret is needed. Re-running the same release updates its assets. This publishes to GitHub Releases, not PyPI.
+
+Installer CI uses `DONUT_INSTALL_SOURCE` to test the just-built wheel before a release exists; normal installations resolve the latest public GitHub Release.
+
+### On-hold tickets
+
+Park deferred tickets in `swim_lanes/on_hold/`. Their numbers and slugs stay reserved. Workers never pick, move or edit held tickets, and held dependencies do not count as complete. Planners keep held specifications consistent but release them to `to_do/` only when explicitly asked; active tickets must not depend on held tickets. `BLOCKED` execution failures move to `blocked/`.
+
+Run `donut add-skills -p PATH` (or setup/planning) to create the new lane in existing projects. Missing on-hold guidance is appended to existing Donut worker/planner skills, preserving their other instructions. Skills already mentioning `on_hold/`, and symlinked skills, are left unchanged.
+
+### Blocked tickets
+
+Workers record `BLOCKED:` and the reason in Completion notes, then move failed or ambiguous tickets to `swim_lanes/blocked/`. Workers skip that lane and dependent work, continuing independent tickets. Planners reserve blocked numbers and may investigate blockers; requeueing requires an explicit retry request and an addressed blocker. User-deferred work remains in `on_hold/`. Existing projects receive missing blocked-lane guidance through `donut add-skills`, setup or planning; custom guidance and linked skills are preserved. Legacy workers leaving a marked ticket in `in_progress/` remain compatible.

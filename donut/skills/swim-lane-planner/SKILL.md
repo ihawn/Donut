@@ -21,6 +21,7 @@ Use these sections:
 - Title and a short user-facing description.
 - **Slug:** `specific-slug`
 - **Depends on:** `other-slug`, … or None
+- **Verify:** `one shell command` (optional). Donut itself runs this from the project root after the worker finishes and moves the ticket to blocked/ when it exits non-zero. Prefer the project's real test command scoped to the change (for example `pytest tests/test_login.py -q`); omit it when nothing automated can prove the ticket.
 - Goal
 - Context: actual code paths, members and anchors; required project conventions.
 - Preflight: prove dependencies exist before edits.

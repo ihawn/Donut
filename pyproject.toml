@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "donut-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Fresh-context coding agents, one swim-lane ticket at a time"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,3 +16,11 @@ qwen-build-next = "donut.legacy:main"
 
 [tool.setuptools.package-data]
 donut = ["skills/*/SKILL.md"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501", "E731"]
