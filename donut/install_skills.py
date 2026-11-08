@@ -28,7 +28,8 @@ def update_lane_rules(project, dest, source):
         print(f'Updated {lane} guidance: {file.relative_to(project)}')
 
 
-def install(project, home):
+def install(project, home, quiet=False):
+    report = (lambda *args: None) if quiet else print
     if not project.is_dir():
         raise ValueError(f'Project directory does not exist: {project}')
     sources = [('swim-lane-worker', Path(__file__).parent / 'skills/swim-lane-worker')]
@@ -51,17 +52,17 @@ def install(project, home):
     for name, source in sources:
         dest = target / name
         if os.path.lexists(dest):
-            print(f'Kept existing: {dest.relative_to(project)}')
+            report(f'Kept existing: {dest.relative_to(project)}')
             if name == 'swim-lane-worker': update_lane_rules(project, dest, source)
         else:
             shutil.copytree(source, dest)
-            print(f'Installed: {dest.relative_to(project)}')
+            report(f'Installed: {dest.relative_to(project)}')
     planner_source = Path(__file__).parent / 'skills/swim-lane-planner'
     for relative in ('skills/donut-planner', '.claude/skills/donut-planner', '.cursor/skills/donut-planner'):
         dest = project / relative
         if not os.path.lexists(dest):
             shutil.copytree(planner_source, dest)
-            print(f'Installed: {relative}')
+            report(f'Installed: {relative}')
         else:
             update_lane_rules(project, dest, planner_source)
     for lane in ('to_do', 'in_progress', 'on_hold', 'blocked', 'done'):
@@ -76,7 +77,7 @@ def install(project, home):
     additions = [line for line in imports if line[2:] not in text]
     if additions:
         qwen.write_text(text.rstrip() + '\n\n## Swim-lane worker\n\n' + '\n\n'.join(additions) + '\n')
-    print(f'Ready: {project}\nRun donut --plan to write tickets, then donut --work next 1 to build the next ticket.')
+    report(f'Ready: {project}\nRun donut, then /plan to write tickets or /work next 1 to build the next ticket.')
 
 
 def main():

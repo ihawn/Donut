@@ -101,13 +101,17 @@ def main():
             else:
                 parser.error('Use --work next COUNT, where COUNT is a positive integer or all.')
             args.action, args.count = 'do', count
-    if not args.action: parser.error('Choose --plan, --work, or a subcommand such as setup.')
+    if not args.action: args.action = 'terminal'
     if args.action == 'welcome':
         welcome(installed=True)
         return 0
     project = Path(getattr(args, 'project', '.')).expanduser().resolve()
     try:
         if not project.is_dir(): raise ValueError(f'Project directory does not exist: {project}')
+        if args.action == 'terminal':
+            from .terminal import run_terminal
+            run_terminal(project, getattr(args, 'model', None))
+            return 0
         if args.action == 'setup':
             setup(project, args.scan); return 0
         if args.action in ('init', 'add-skills'):

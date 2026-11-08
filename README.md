@@ -15,7 +15,7 @@
   <a href="#install"><img src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFA818?style=flat-square" alt="macOS, Windows and Linux"></a>
   <a href="https://github.com/ihawn/Donut/stargazers"><img src="https://img.shields.io/github/stars/ihawn/Donut?style=flat-square&color=FF5E4E" alt="GitHub stars"></a>
   <a href="https://github.com/ihawn/Donut/commits/main"><img src="https://img.shields.io/github/last-commit/ihawn/Donut/main?style=flat-square&color=124D63" alt="Last commit"></a>
-  <a href="https://github.com/ihawn/Donut/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/runtime_dependencies-0-17B8BE?style=flat-square" alt="Zero Python runtime dependencies"></a>
+  <a href="https://github.com/ihawn/Donut/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/terminal-Textual-17B8BE?style=flat-square" alt="Textual terminal interface"></a>
 </p>
 
 <p align="center"><a href="#install">Install</a> · <a href="#quick-start">Quick start</a> · <a href="#how-it-works">How it works</a> · <a href="#setup">Models & setup</a> · <a href="#releases">Releases</a> · <a href="#development--verification">Contribute</a></p>
@@ -38,8 +38,8 @@ After [installing](#install), open your project and choose your models:
 
 ```sh
 donut setup
-donut --plan                     # interactive planner; describe what you want
-donut --work next 1              # execute one eligible ticket
+donut                            # open the interactive terminal
+# /plan to plan; /model to choose account + model; /work next 1 to build
 ```
 
 `planner` and `worker` are aliases **you choose during setup**, not built-in model names.
@@ -51,6 +51,20 @@ donut -m worker --work        # all eligible tickets, one fresh context each
 donut -m worker --work next 1 -p ../app # work in another project
 donut -h                          # all commands
 ```
+
+## Interactive terminal
+
+Run `donut` in your project. The terminal supports multiline editing, paste, mouse-operated searchable menus, rendered Markdown/code, streaming responses, thinking indicators, approval dialogs and clipboard copy (`/copy`, subject to terminal support). Ctrl+Enter sends; Enter inserts a newline. Ctrl+C cancels and Ctrl+Q exits. F2 opens models; F3 switches modes. Type `/` for the searchable command menu.
+
+- `/plan` selects planning mode. Claude and Codex use persistent native sessions; worker tickets retain fresh contexts.
+- `/work` opens next-ticket/count/all controls; `/work next 1` runs one ticket.
+- `/model` discovers models for each configured connection and lists the account alias first, including separate `claude` and `claude-personal` entries when configured. Planner and worker choices are independent. Provider changes start a distinct provider conversation.
+- `/usage` shows each connection's available usage. Codex account rate limits are queried from its app server. Claude exposes session tokens and reported cost here; subscription quotas require native Claude `/usage`. Unavailable figures are identified explicitly.
+- `/plugin`, `/mcp`, and `/context` inspect selected-provider capabilities. Claude plugin slash commands are discovered from the native engine and can be invoked directly. Codex uses its native plugin inventory and MCP status interfaces.
+- `/native` suspends Donut and opens the selected provider's original interactive client, preserving its account/model selection. Use it for native plugin installation, provider-only built-ins, and interactions that Donut cannot yet render. Exit the client to return to Donut.
+- `/clear` starts a fresh conversation for the selected account/model. `/copy` copies the last answer. `/exit` closes the terminal.
+
+**Compatibility boundary:** this release supplies a shared terminal and provider sessions; it does not reproduce every upstream command, plugin manager, interaction type, or clipboard behavior. Unsupported Codex interaction requests are rejected visibly rather than auto-approved. Native-only features remain accessible through `/native`. Qwen/local turns use Qwen's native saved-session mechanism; API-compatible connections use Qwen as their agent engine. Legacy CLI modes below remain supported.
 
 ## How it works
 
@@ -135,7 +149,7 @@ donut -m qwen --work
 donut -m cloud-worker --work next 1 --project ../another-project
 ```
 
-Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, `on_hold/`, `blocked/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+Setup ends with **SETUP COMPLETE** and **Try running `donut`**. Run it to open the terminal, then choose `/plan`. The older `donut --plan` prompt remains available for compatibility. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, `on_hold/`, `blocked/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
 
 Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
 

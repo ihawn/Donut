@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "donut-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fresh-context coding agents, one swim-lane ticket at a time"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["textual>=8.2,<9", "claude-agent-sdk>=0.2.179,<0.3"]
 
 [project.scripts]
 donut = "donut.cli:main"

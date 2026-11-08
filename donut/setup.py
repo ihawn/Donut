@@ -221,4 +221,4 @@ def setup(project, root=None):
             if profile.get('claude_config_dir'): print('          Login folder: ' + profile['claude_config_dir'])
     print('For local residency, set OLLAMA_KEEP_ALIVE=1h on your Ollama server. Donut also refreshes it after runs.')
     print(paint('\nSETUP COMPLETE', 'teal'))
-    print('Try running `donut --plan`')
+    print('Try running `donut`')

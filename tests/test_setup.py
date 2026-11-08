@@ -92,7 +92,7 @@ class SetupTests(unittest.TestCase):
         answers=iter(['codex','n','','n','planner','','n','planner'])
         with patch('builtins.input',side_effect=lambda _:next(answers)),patch('shutil.which',return_value='/bin/codex'),patch('donut.setup.discover',return_value=(['local-model'],[])),patch('donut.setup.install'),patch('donut.setup.shell_aliases', return_value={}),contextlib.redirect_stdout(io.StringIO()) as output:
             setup.setup(self.root)
-        self.assertTrue(output.getvalue().endswith('SETUP COMPLETE\nTry running `donut --plan`\n'))
+        self.assertTrue(output.getvalue().endswith('SETUP COMPLETE\nTry running `donut`\n'))
         saved=config.load()
         self.assertEqual(saved['planner'],'planner')
         self.assertEqual(saved['aliases']['planner']['engine'],'codex')
@@ -103,7 +103,7 @@ class SetupTests(unittest.TestCase):
         result=subprocess.CompletedProcess(['ollama','list'],0,'NAME ID SIZE MODIFIED\nlocal-model abc 1GB now\n','')
         with patch('builtins.input',side_effect=lambda _:next(answers)),patch('shutil.which',return_value='/bin/tool'),patch('donut.setup.subprocess.run',return_value=result) as calls,patch('donut.setup.discover',return_value=(['local-model'],[])),patch('donut.setup.install'),patch('donut.setup.shell_aliases', return_value={}),contextlib.redirect_stdout(io.StringIO()) as output:
             setup.setup(self.root)
-        self.assertTrue(output.getvalue().endswith('SETUP COMPLETE\nTry running `donut --plan`\n'))
+        self.assertTrue(output.getvalue().endswith('SETUP COMPLETE\nTry running `donut`\n'))
         saved=config.load()
         self.assertEqual(saved['planner'],'local-planner')
         self.assertEqual(saved['aliases']['local-planner']['engine'],'ollama')
