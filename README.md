@@ -135,7 +135,7 @@ donut -m qwen --work
 donut -m cloud-worker --work next 1 --project ../another-project
 ```
 
-Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, `on_hold/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
+Setup ends with **SETUP COMPLETE** and **Try running `donut --plan`**. Run that command to open an interactive planning prompt in your current terminal. Donut installs the project skills and creates `swim_lanes/to_do/`, `in_progress/`, `on_hold/`, `blocked/`, and `done/`; the planner researches your requests and writes tickets into `to_do/`. The planner shows a thinking spinner and a few high-level activity updates, keeping raw reasoning, tool arguments and tool output in its logs. It finishes with a very brief overview and a list of ticket files actually created during that prompt. Existing tickets that are only edited or renumbered are not listed as new. After each successful prompt it prints **PLANNING COMPLETE** and **Try exiting the shell and running `donut --work next 1`**, then accepts another prompt. Enter `/exit` or `/quit`, or send EOF (Ctrl-D on macOS/Linux; Ctrl-Z then Enter on Windows), to leave.
 
 Each planning prompt starts a new agent process with earlier requests and a reference to the previous output log for follow-ups; the project files and tickets preserve the plan. `donut --plan "a request"` runs one prompt and exits. A failed prompt reports **PLANNING FAILED** instead of completion.
 
@@ -145,7 +145,7 @@ Each planning prompt starts a new agent process with earlier requests and a refe
 
 `donut init` and `donut add-skills` install skills without login/setup. Existing instructions and skills are kept. They create:
 
-- `swim_lanes/{to_do,in_progress,on_hold,done}/`
+- `swim_lanes/{to_do,in_progress,on_hold,blocked,done}/`
 - `.qwen/skills/swim-lane-worker/SKILL.md`, connected through `QWEN.md`
 - `skills/donut-planner/SKILL.md`, explicitly loaded by `donut --plan` (including Codex), plus Claude/Cursor skill copies
 - Relevant locally available Unity skills when a Unity project is detected
@@ -197,6 +197,10 @@ Installer CI uses `DONUT_INSTALL_SOURCE` to test the just-built wheel before a r
 
 ### On-hold tickets
 
-Park deferred tickets in `swim_lanes/on_hold/`. Their numbers and slugs stay reserved. Workers never pick, move or edit held tickets, and held dependencies do not count as complete. Planners keep held specifications consistent but release them to `to_do/` only when explicitly asked; active tickets must not depend on held tickets. `BLOCKED` execution failures still stay in `in_progress/`.
+Park deferred tickets in `swim_lanes/on_hold/`. Their numbers and slugs stay reserved. Workers never pick, move or edit held tickets, and held dependencies do not count as complete. Planners keep held specifications consistent but release them to `to_do/` only when explicitly asked; active tickets must not depend on held tickets. `BLOCKED` execution failures move to `blocked/`.
 
 Run `donut add-skills -p PATH` (or setup/planning) to create the new lane in existing projects. Missing on-hold guidance is appended to existing Donut worker/planner skills, preserving their other instructions. Skills already mentioning `on_hold/`, and symlinked skills, are left unchanged.
+
+### Blocked tickets
+
+Workers record `BLOCKED:` and the reason in Completion notes, then move failed or ambiguous tickets to `swim_lanes/blocked/`. Workers skip that lane and dependent work, continuing independent tickets. Planners reserve blocked numbers and may investigate blockers; requeueing requires an explicit retry request and an addressed blocker. User-deferred work remains in `on_hold/`. Existing projects receive missing blocked-lane guidance through `donut add-skills`, setup or planning; custom guidance and linked skills are preserved. Legacy workers leaving a marked ticket in `in_progress/` remain compatible.

@@ -17,7 +17,7 @@ class BatchTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.project = self.root / 'project with spaces'
-        for lane in ('to_do', 'in_progress', 'done'):
+        for lane in ('to_do', 'in_progress', 'blocked', 'done'):
             (self.project / 'swim_lanes' / lane).mkdir(parents=True)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
@@ -34,7 +34,7 @@ if '--max-tool-calls' in args:
 p=pathlib.Path(re.search(r'ONE named task: (.*?)\\. Read QWEN', prompt)[1])
 text=p.read_text()
 blocked='block-me' in text
-lane='in_progress' if blocked else 'done'
+lane='blocked' if blocked else 'done'
 new=p.parent.parent/lane/p.name
 p.rename(new)
 with new.open('a') as f: f.write('\\n## Completion notes\\n'+('BLOCKED: test failure' if blocked else 'Changed fixture. Tests: passed.'))
@@ -87,7 +87,7 @@ print('finished', p.name)
         result = self.run_batch('all')
         self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
         self.assertEqual([p.name for p in runner.tasks(self.project,'done')], ['003_independent.md'])
-        self.assertEqual(len(runner.tasks(self.project,'in_progress')),1)
+        self.assertEqual(len(runner.tasks(self.project,'blocked')),1)
         self.assertEqual(len(runner.tasks(self.project,'to_do')),1)
 
     def test_on_hold_and_dependent_work_are_skipped(self):
@@ -110,6 +110,16 @@ print('finished', p.name)
         self.ticket(4, 'dependent', '`held`')
         independent = self.ticket(5, 'independent')
         self.assertEqual(runner.pick(self.project, set()), independent)
+
+    def test_blocked_tickets_and_their_dependents_stay_untouched(self):
+        blocked = self.ticket(1, 'blocked-work', lane='blocked')
+        before = blocked.read_bytes()
+        self.ticket(2, 'dependent', '`blocked-work`')
+        self.ticket(3, 'independent')
+        result = self.run_batch('all', new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(blocked.read_bytes(), before)
+        self.assertEqual([p.name for p in runner.tasks(self.project, 'done')], ['003_independent.md'])
 
     def test_resume_in_progress_first(self):
         existing = self.ticket(5, 'existing', lane='in_progress')

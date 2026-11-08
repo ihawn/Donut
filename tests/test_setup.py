@@ -39,6 +39,7 @@ class SetupTests(unittest.TestCase):
             once = [file.read_bytes() for file in (worker, planner)]
             install(self.root, self.root)
         self.assertTrue((self.root/'swim_lanes/on_hold/.gitkeep').is_file())
+        self.assertTrue((self.root/'swim_lanes/blocked/.gitkeep').is_file())
         for index, file in enumerate((worker, planner)):
             self.assertTrue(file.read_text().startswith('My existing project instructions.'))
             self.assertIn('on_hold/', file.read_text())
@@ -50,7 +51,8 @@ class SetupTests(unittest.TestCase):
         worker.write_text('Custom rules for swim_lanes/on_hold/\n')
         before = worker.read_bytes()
         with contextlib.redirect_stdout(io.StringIO()): install(self.root, self.root)
-        self.assertEqual(worker.read_bytes(), before)
+        self.assertTrue(worker.read_bytes().startswith(before))
+        self.assertIn('blocked/', worker.read_text())
 
     @unittest.skipIf(os.name == 'nt', 'Creating symlinks needs Windows privileges')
     def test_linked_skills_are_not_modified(self):

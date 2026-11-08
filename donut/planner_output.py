@@ -94,7 +94,7 @@ class PlannerOutput:
 
 def ticket_snapshot(project):
     tickets = {}
-    for lane in ('to_do', 'in_progress', 'on_hold', 'done'):
+    for lane in ('to_do', 'in_progress', 'on_hold', 'blocked', 'done'):
         for path in sorted((project/'swim_lanes'/lane).glob('[0-9]*_*.md')):
             text = path.read_text(encoding='utf-8')
             match = re.search(r'^\*\*Slug:\*\*\s*`?([^`\n]+)', text, re.M)

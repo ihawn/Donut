@@ -81,7 +81,7 @@ class PlannerOutputTests(unittest.TestCase):
     def test_released_hold_ticket_is_not_reported_as_new(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp)
-            held = project/'swim_lanes/on_hold'
+            held = project/'swim_lanes/blocked'
             todo = project/'swim_lanes/to_do'
             held.mkdir(parents=True)
             todo.mkdir()

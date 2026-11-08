@@ -37,7 +37,9 @@ def plan_session(profile, alias, project, request=None):
                   'Research the request and write scoped tickets in swim_lanes/to_do/. Inspect existing tickets '
                   'before adding or updating them; preserve work already in progress or done. Inspect swim_lanes/on_hold/ '
                   'to reserve held ticket numbers and avoid duplicates. Keep held specifications consistent, but '
-                  'release them only on an explicit user request; never queue work depending on a held ticket. Do not implement, '
+                  'release them only on an explicit user request. Inspect swim_lanes/blocked/ too: reserve its numbers, '
+                  'investigate blockers, but requeue only when the user requests retry and the blocker is addressed. '
+                  'Never queue work depending on held or blocked tickets. Do not implement, '
                   'commit or push. Your final response must be at most two short sentences describing what you did, '
                   'or a concise clarification question if needed. Do not repeat ticket lists or technical details; '
                   'Donut will list the created tickets. Earlier user requests in this planning session:\n' + json.dumps(history) +
