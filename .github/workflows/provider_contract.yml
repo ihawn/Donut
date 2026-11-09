@@ -19,9 +19,7 @@ permissions:
 
 jobs:
   flags:
-    # Self-hosted runner: never run code from fork PRs on it.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
