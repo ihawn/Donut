@@ -78,8 +78,11 @@ def validate(profile):
             raise ValueError("key_env must be an environment variable name, never the key itself")
 
 
-def command(profile, prompt, readonly=False, permission=None):
-    """Build the provider command. permission is a Donut mode; unset means the profile's unattended mode."""
+def command(profile, prompt, readonly=False, permission=None, review=False):
+    """Build the provider command. permission is a Donut mode; unset means the profile's unattended mode.
+
+    readonly gives no tools at all (run summaries). review allows reading the project but never changing it.
+    """
     validate(profile)
     engine, model = profile["engine"], profile.get("model")
     permission = permission or batch_permission(profile)
@@ -88,7 +91,7 @@ def command(profile, prompt, readonly=False, permission=None):
         env["CLAUDE_CONFIG_DIR"] = str(Path(profile["claude_config_dir"]).expanduser().resolve())
     if engine == "codex":
         args = ["codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check"]
-        if readonly:
+        if readonly or review:
             args += ["--sandbox", "read-only"]
         elif permission == "full":
             args += ["--dangerously-bypass-approvals-and-sandbox"]
@@ -111,6 +114,8 @@ def command(profile, prompt, readonly=False, permission=None):
         ]
         if readonly:
             args += ["--permission-mode", "plan", "--tools", ""]
+        elif review:
+            args += ["--tools", "Read,Grep,Glob", "--permission-prompts", "none"]
         elif permission == "full":
             args += ["--dangerously-skip-permissions"]
         else:
@@ -131,6 +136,8 @@ def command(profile, prompt, readonly=False, permission=None):
         ]
         if readonly:
             args += ["--approval-mode", "plan", "--max-tool-calls", "0"]
+        elif review:
+            args += ["--approval-mode", "plan"]
         elif permission == "full":
             args += ["--yolo"]
         else:

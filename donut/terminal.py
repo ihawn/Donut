@@ -24,6 +24,7 @@ from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 from .config import load, save
 from .highlight import Highlighter
+from .summaries import claude_context, codex_context, mcp_servers, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
@@ -42,6 +43,9 @@ DIM = "#8a96a3"
 # Lines the batch runner prints that belong in the status bar, not the transcript.
 RUNNER_PROGRESS = re.compile(r"^\[(?P<label>[^\]]*?) · (?P<seconds>\d+)s elapsed · waiting for agent output\]$")
 RUNNER_TICKET = re.compile(r"^\[\d+/(?:\d+|all)\] (?P<ticket>\S+)")
+RUNNER_REVIEW = re.compile(r"^\[review \d+/\d+\] (?P<ticket>\S+)")
+RUNNER_RECOVER = re.compile(r"^\[recover\] (?P<ticket>\S+)")
+ROLE_TITLES = {"plan": "planner", "work": "worker", "review": "reviewer"}
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -123,6 +127,7 @@ COMMANDS = [
     ("/plan", "Plan mode: describe work and the planner writes tickets"),
     ("/work", "Run tickets with the worker, one fresh context each"),
     ("/model", "Choose the account and model for this mode"),
+    ("/review", "Choose the model that reviews each finished ticket, or turn review off"),
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
     ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
     ("/usage", "Show usage for each configured connection"),
@@ -437,6 +442,9 @@ class Donut(App):
             for role, key in (("plan", "planner"), ("work", "default_model"))
         }
         self.profiles = {role: copy.deepcopy(aliases.get(name, {})) for role, name in self.selected.items()}
+        # Who reviews each finished ticket: None follows the planner, "off" disables review, else an alias.
+        self.reviewer = self.config.get("reviewer")
+        self.sync_reviewer()
         self.sessions = {}
         self.busy = False
         self.active = None
@@ -519,6 +527,16 @@ class Donut(App):
             except NoMatches:
                 pass  # The timer can fire once more while the app shuts down.
 
+    def sync_reviewer(self):
+        """Keep the review role in step with /review, and with the planner while review follows it."""
+        if self.reviewer == "off":
+            self.selected["review"], self.profiles["review"] = None, {}
+        elif self.reviewer and self.reviewer in self.config.get("aliases", {}):
+            self.selected["review"] = self.reviewer
+            self.profiles["review"] = copy.deepcopy(self.config["aliases"][self.reviewer])
+        else:
+            self.selected["review"], self.profiles["review"] = self.selected.get("plan"), self.profiles.get("plan", {})
+
     def start_turn(self, role, detail="", activity="thinking"):
         """Mark which model is now working, for the spinner and the status line."""
         alias = self.selected.get(role)
@@ -539,7 +557,7 @@ class Donut(App):
         if self.running:
             role, alias, profile = self.running
             line.append(model_name(profile, alias), style=f"bold {ORANGE}")
-            line.append(f"  {'planner' if role == 'plan' else 'worker'}", style=DIM)
+            line.append(f"  {ROLE_TITLES.get(role, role)}", style=DIM)
             line.append(f"  is {self.activity or 'thinking'}", style=GRAY)
             if self.detail:
                 detail = self.detail if len(self.detail) <= 40 else self.detail[:39] + "…"
@@ -586,8 +604,11 @@ class Donut(App):
         line = Text()
         line.append(f" {self.mode.upper()} ", style=f"bold #101820 on {ORANGE if self.mode == 'plan' else CORAL}")
         running_role = self.running[0] if self.busy and self.running else None
-        for role, title in (("plan", "planner"), ("work", "worker")):
+        for role, title in ROLE_TITLES.items():
             alias, profile = self.selected.get(role), self.profiles.get(role, {})
+            if role == "review" and not profile:
+                line.append("  ○ reviewer off", style=DIM)
+                continue
             if role == running_role:
                 line.append("  ● ", style=f"bold {ORANGE}")
                 line.append(title + " ", style=f"bold {ORANGE}")
@@ -970,6 +991,9 @@ class Donut(App):
                 self.say("Planning mode. Describe what to plan.", ORANGE)
         elif name == "/model":
             await self.models()
+            self.sync_reviewer()
+        elif name == "/review":
+            await self.choose_reviewer(args[0] if args else None)
         elif name == "/permissions":
             rows = [(label, mode, description) for mode, (label, description) in PERMISSION_MODES.items()]
             if args and args[0] in PERMISSION_MODES:
@@ -997,25 +1021,33 @@ class Donut(App):
             self.notify("Copied last response (terminal clipboard support required).")
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /model · /permissions [ask|accept_edits|auto|full] · /auto · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nShift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Provider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /model · /review [ALIAS|planner|off] · /permissions [ask|accept_edits|auto|full] · /auto · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nShift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Provider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.mode], self.profiles[self.mode])
+            provider = self.selected[self.mode] or "provider"
+            model = self.profiles[self.mode].get("model") or ""
             if isinstance(session, ClaudeSession):
                 if name == "/plugin":
                     data = session.info.get("commands", [])
                 elif name == "/mcp":
-                    data = await session.client.get_mcp_status()
-                else:
-                    data = await session.client.get_context_usage()
-            elif isinstance(session, CodexSession):
-                method = {"/plugin": "plugin/list", "/mcp": "mcpServerStatus/list", "/context": "thread/read"}[name]
-                if name == "/context" and not session.thread:
-                    self.say("No active Codex thread yet.")
+                    for line in render_mcp(mcp_servers(await session.client.get_mcp_status()), provider):
+                        self.say(line)
                     return
-                data = await session.request(
-                    method, {"threadId": session.thread, "includeTurns": False} if name == "/context" else {}
-                )
+                else:
+                    for line in claude_context(await session.client.get_context_usage()):
+                        self.say(line)
+                    return
+            elif isinstance(session, CodexSession):
+                if name == "/mcp":
+                    for line in render_mcp(mcp_servers(await session.request("mcpServerStatus/list", {})), provider):
+                        self.say(line)
+                    return
+                if name == "/context":
+                    for line in codex_context(getattr(session, "usage", None), model):
+                        self.say(line)
+                    return
+                data = await session.request("plugin/list", {})
             else:
                 self.say("Use /native for Qwen plugins, MCP and context controls.")
                 return
@@ -1036,12 +1068,17 @@ class Donut(App):
                     rows = []
                     for market in data.get("marketplaces", []):
                         for plugin in market.get("plugins", []):
-                            rows.append((plugin.get("name", "?") + " · " + str(plugin.get("installed", False)), plugin))
+                            state = "installed" if plugin.get("installed") else "not installed"
+                            description = (plugin.get("description") or "")[:70]
+                            rows.append((plugin.get("name", "?"), plugin, f"{state} · {description}".strip(" ·")))
                     selected = await self.choose("Codex plugins · /native for management", rows)
                     if selected:
-                        self.say(json.dumps(selected, indent=2, ensure_ascii=False))
-            else:
-                self.say(json.dumps(data, indent=2, ensure_ascii=False))
+                        line = Text("  " + selected.get("name", "?"), style=f"bold {ORANGE}")
+                        line.append("  installed" if selected.get("installed") else "  not installed", style=GRAY)
+                        if selected.get("description"):
+                            line.append("  " + selected["description"], style=DIM)
+                        self.say(line)
+                        self.say("  Install or remove plugins with /native.", DIM)
         elif name == "/native":
             await self.native()
         else:
@@ -1077,6 +1114,38 @@ class Donut(App):
         for path in sorted(created):
             self.say("  " + path.relative_to(self.project).as_posix(), GRAY)
         self.say("PLANNING COMPLETE · /work next 1", f"bold {ORANGE}")
+
+    async def choose_reviewer(self, choice=None):
+        """Pick who reviews each finished ticket: the planner (default), any alias, or off. The choice is saved."""
+        aliases = self.config.get("aliases", {})
+        if choice is None:
+            planner = model_name(self.profiles.get("plan", {}), self.selected.get("plan"))
+            rows = [("Planner (default)", "planner", f"follows the planner · {planner}")]
+            rows += [(alias, alias, model_name(profile, alias)) for alias, profile in aliases.items()]
+            rows.append(("Off", "off", "no review; the worker's result stands"))
+            choice = await self.choose("Reviewer · checks each ticket in a fresh context", rows)
+            if not choice:
+                return
+        if choice not in ("planner", "off") and choice not in aliases:
+            raise ValueError("Use /review planner, /review off, or /review ALIAS with a configured alias.")
+        self.reviewer = None if choice == "planner" else choice
+        self.sync_reviewer()
+        try:
+            config = load()
+            if self.reviewer is None:
+                config.pop("reviewer", None)
+            else:
+                config["reviewer"] = self.reviewer
+            save(config)
+        except (ValueError, OSError) as error:
+            self.say(f"Reviewer applies to this session only: {error}", DIM)
+        if self.reviewer == "off":
+            self.say("Review off. Finished tickets are not reviewed.", ORANGE)
+        else:
+            who = model_name(self.profiles["review"], self.selected["review"])
+            self.say(Text(f"  Reviewer: {who}", style=f"bold {ORANGE}"))
+            self.say("  It checks each finished ticket in a fresh context and sends issues back to the worker.", DIM)
+        self.status()
 
     async def models(self):
         rows = []
@@ -1153,6 +1222,16 @@ class Donut(App):
         with tempfile.TemporaryDirectory(prefix="donut-worker-") as temp:
             config = copy.deepcopy(self.config)
             config["aliases"][alias] = dict(self.profiles["work"], permission_mode=self.permission)
+            if self.profiles.get("review"):
+                # A dedicated alias, so a reviewer on the same account as the worker keeps its own model.
+                config["aliases"]["donut-reviewer"] = copy.deepcopy(self.profiles["review"])
+                config["reviewer"] = "donut-reviewer"
+            else:
+                config["reviewer"] = "off"
+            if self.profiles.get("plan"):
+                # Blocked or stuck tickets go back to the planner, with the same permission mode as the worker.
+                config["aliases"]["donut-planner"] = dict(self.profiles["plan"], permission_mode=self.permission)
+                config["recovery"] = "donut-planner"
             folder = Path(temp) / "donut"
             folder.mkdir()
             path = folder / "config.json"
@@ -1189,6 +1268,16 @@ class Donut(App):
                 if started:
                     ticket = started["ticket"]
                     self.start_turn("work", ticket, "working")
+                review = RUNNER_REVIEW.match(line)
+                if review:
+                    self.start_turn("review", review["ticket"], "reviewing")
+                if line.startswith("Review: changes requested"):
+                    self.start_turn("work", ticket, "addressing review feedback")
+                recovering = RUNNER_RECOVER.match(line)
+                if recovering:
+                    self.start_turn("plan", recovering["ticket"], "recovering a blocked ticket")
+                if line.startswith("[repair queue]"):
+                    self.start_turn("plan", "", "repairing stuck tickets")
                 self.say(highlighter.line(line))
             code = await self.child.wait()
             self.child = None

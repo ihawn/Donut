@@ -29,9 +29,35 @@ with open(os.environ['CALLS'],'a') as f: f.write(json.dumps(args)+'\\n')
 if '--max-tool-calls' in args:
     print('| Task | Status | What changed | Tests | Human check |')
     sys.exit(0)
+if 'You are the planner, recovering' in prompt:
+    ticket=pathlib.Path(re.search(r'Blocked ticket: (\\S+)', prompt)[1])
+    text=ticket.read_text()
+    if 'needs-human' in text:
+        print('RECOVERY: NEEDS HUMAN choose the chimney width')
+    else:
+        text=text.replace('MARKER: block-me','MARKER: fixed').replace('## Completion notes','## Addendum 1: planner recovery\\n\\nUse a 0.3u chimney.\\n\\n## Completion notes',1)
+        ticket.write_text(text)
+        print('RECOVERY: REQUEUED corrected the chimney width')
+    sys.exit(0)
+if 'repairing the ticket queue' in prompt:
+    for path in pathlib.Path('swim_lanes').rglob('*.md'):
+        text=path.read_text()
+        if 'BuildAnnex.cs' in text:
+            path.write_text(re.sub(r'\\*\\*Depends on:\\*\\*.*', '**Depends on:** None', text))
+    print('REPAIR: DONE fixed one Depends on line')
+    sys.exit(0)
+if 'You are the reviewer' in prompt:
+    ticket=pathlib.Path(re.search(r'Ticket file: (\\S+)', prompt)[1]).read_text()
+    if 'always-reject' in ticket or ('reject-once' in ticket and 'Addendum 1: review feedback' not in ticket):
+        print('Looked at the change.')
+        print('VERDICT: CHANGES REQUESTED')
+        print('1. Add the missing jump test.')
+    else:
+        print('VERDICT: APPROVED')
+    sys.exit(0)
 p=pathlib.Path(re.search(r'ONE named task: (.*?)\\. Read this', prompt)[1])
 text=p.read_text()
-blocked='block-me' in text
+blocked='block-me' in text and 'MARKER: fixed' not in text
 lane='blocked' if blocked else 'done'
 new=p.parent.parent/lane/p.name
 p.rename(new)
@@ -300,6 +326,138 @@ print('finished', p.name)
         result = self.run_batch("all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertLess(result.stdout.index("002_parent.md"), result.stdout.index("001_dependent.md"))
+
+    def results(self):
+        runs = sorted((self.root / "state/donut").glob("run-*"))
+        return json.loads((runs[-1] / "results.json").read_text())
+
+    def calls_made(self):
+        return [json.loads(line) for line in self.calls.read_text().splitlines()]
+
+    def test_reviewer_approves_and_the_worker_moves_on(self):
+        self.ticket(1, "first")
+        self.ticket(2, "second")
+        result = self.run_batch("all", "--review", "test", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(runner.tasks(self.project, "done")), 2)
+        self.assertIn("[review 1/3] 001_first.md", result.stdout)
+        self.assertIn("Review: approved", result.stdout)
+        self.assertEqual([r["review"]["verdict"] for r in self.results()], ["approved", "approved"])
+        review_calls = [c for c in self.calls_made() if "You are the reviewer" in c[c.index("--prompt") + 1]]
+        self.assertEqual(len(review_calls), 2)
+        self.assertTrue(all(c[c.index("--approval-mode") + 1] == "plan" for c in review_calls))  # Read-only.
+
+    def test_requested_changes_go_back_to_the_worker(self):
+        self.ticket(1, "reject-once")
+        result = self.run_batch("all", "--review", "test", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Review: changes requested; sending feedback to the worker (2/3)", result.stdout)
+        self.assertIn("[review 2/3] 001_reject-once.md", result.stdout)
+        done = self.project / "swim_lanes/done/001_reject-once.md"
+        self.assertTrue(done.exists())
+        text = done.read_text()
+        self.assertIn("## Addendum 1: review feedback", text)
+        self.assertIn("1. Add the missing jump test.", text)
+        # The addendum sits in the ticket body, before the completion notes.
+        self.assertLess(text.index("## Addendum 1"), text.index("## Completion notes"))
+        prompts = [c[c.index("--prompt") + 1] for c in self.calls_made()]
+        worker_prompts = [p for p in prompts if "ONE named task" in p]
+        self.assertEqual(len(worker_prompts), 2)
+        self.assertIn("This is a rework", worker_prompts[1])
+        self.assertIn("swim_lanes/in_progress/001_reject-once.md", worker_prompts[1])
+        self.assertEqual(self.results()[0]["review"]["rounds"], 2)
+
+    def test_ticket_is_blocked_when_the_reviewer_never_approves(self):
+        self.ticket(1, "always-reject")
+        self.ticket(2, "dependent", "`always-reject`")
+        result = self.run_batch("all", "--review", "test", "--review-rounds", "2", new_syntax=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        blocked = self.project / "swim_lanes/blocked/001_always-reject.md"
+        self.assertTrue(blocked.exists())
+        self.assertIn("BLOCKED: the reviewer did not approve after 2 reviews", blocked.read_text())
+        self.assertTrue((self.project / "swim_lanes/to_do/002_dependent.md").exists())
+        self.assertEqual(self.results()[0]["status"], "Blocked")
+
+    def test_review_off_and_no_planner_mean_no_review(self):
+        self.ticket(1, "first")
+        result = self.run_batch("all", "--review", "off", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("[review", result.stdout)
+        self.assertNotIn("review", self.results()[0])
+
+    def test_addenda_go_before_completion_notes_in_order(self):
+        text = "# Jump\n**Slug:** `jump`\n\n## Requirements\n1. Jump.\n\n## Completion notes\nDone.\n"
+        once = runner.add_addendum(text, 1, "1. Add a test.")
+        twice = runner.add_addendum(once, 2, "1. The test still fails.")
+        self.assertLess(twice.index("## Addendum 1"), twice.index("## Addendum 2"))
+        self.assertLess(twice.index("## Addendum 2"), twice.index("## Completion notes"))
+        self.assertTrue(twice.rstrip().endswith("Done."))
+        no_notes = runner.add_addendum("# Jump\n", 1, "1. Fix it.")
+        self.assertTrue(no_notes.rstrip().endswith("1. Fix it."))
+
+    def write(self, number, slug, body, deps="None", lane="to_do"):
+        path = self.project / "swim_lanes" / lane / f"{number:03}_{slug}.md"
+        path.write_text(f"**Slug:** `{slug}`\n**Depends on:** {deps}\n\n{body}\n")
+        return path
+
+    def test_planner_recovers_a_blocked_ticket_and_the_run_continues(self):
+        self.write(1, "chimney", "MARKER: block-me")
+        self.ticket(2, "dependent", "`chimney`")
+        result = self.run_batch("all", "--recover", "test", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[recover] 001_chimney.md", result.stdout)
+        self.assertIn("Recovery: ticket revised and requeued. corrected the chimney width", result.stdout)
+        self.assertEqual([p.name for p in runner.tasks(self.project, "done")], ["001_chimney.md", "002_dependent.md"])
+        text = (self.project / "swim_lanes/done/001_chimney.md").read_text()
+        self.assertLess(text.index("## Addendum 1: planner recovery"), text.index("## Completion notes"))
+        self.assertEqual(
+            [(r["task"], r["status"]) for r in self.results()][:2],
+            [("001_chimney.md", "Blocked"), ("001_chimney.md", "Done")],
+        )
+        runs = sorted((self.root / "state/donut").glob("run-*"))
+        self.assertTrue((runs[-1] / "001.recover.log").exists())
+        self.assertTrue((runs[-1] / "002.log").exists())  # The retry got its own log.
+
+    def test_recovery_retries_within_the_requested_count(self):
+        self.write(1, "chimney", "MARKER: block-me")
+        result = self.run_batch("1", "--recover", "test", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.project / "swim_lanes/done/001_chimney.md").exists())
+
+    def test_planner_can_leave_a_ticket_for_a_human(self):
+        self.write(1, "chimney", "MARKER: block-me needs-human")
+        result = self.run_batch("all", "--recover", "test", new_syntax=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Recovery: needs a human decision. choose the chimney width", result.stdout)
+        self.assertTrue((self.project / "swim_lanes/blocked/001_chimney.md").exists())
+        self.assertEqual(result.stdout.count("[recover]"), 1)  # Never more than once per ticket.
+
+    def test_planner_repairs_broken_dependencies_once(self):
+        self.ticket(1, "annex", "`BuildAnnex.cs` Section Done")
+        result = self.run_batch("all", "--recover", "test", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[repair queue] 1 stuck ticket(s)", result.stdout)
+        self.assertIn("Repair: 1 of 1 fixed.", result.stdout)
+        self.assertTrue((self.project / "swim_lanes/done/001_annex.md").exists())
+
+    def test_recovery_off(self):
+        self.write(1, "chimney", "MARKER: block-me")
+        self.ticket(2, "annex", "`BuildAnnex.cs`")
+        result = self.run_batch("all", "--recover", "off", new_syntax=True)
+        self.assertNotIn("[recover]", result.stdout)
+        self.assertNotIn("[repair queue]", result.stdout)
+
+    def test_verdict_parsing(self):
+        log = self.root / "review.log"
+        log.write_text(
+            "[model]\nNotes VERDICT: APPROVED earlier\nMore\n**VERDICT: CHANGES REQUESTED**\n1. Fix it.\n[Tool result]\n"
+        )
+        verdict, feedback = runner.read_verdict(log)
+        self.assertEqual(verdict, "changes")  # The last verdict line wins.
+        self.assertIn("1. Fix it.", feedback)
+        self.assertNotIn("[Tool result]", feedback)
+        log.write_text("no verdict here")
+        self.assertEqual(runner.read_verdict(log), (None, ""))
 
 
 if __name__ == "__main__":

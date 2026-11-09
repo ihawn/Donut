@@ -102,6 +102,23 @@ def main():
         action="store_true",
         help="with --work: git commit the working tree after every ticket so each step can be reverted",
     )
+    parser.add_argument(
+        "--review",
+        metavar="ALIAS",
+        help="with --work: alias that reviews each finished ticket, or off (default: the saved reviewer, else the planner)",
+    )
+    parser.add_argument(
+        "--recover",
+        metavar="ALIAS",
+        help="with --work: alias that revises blocked tickets and repairs stuck ones, or off (default: the planner)",
+    )
+    parser.add_argument(
+        "--review-rounds",
+        type=int,
+        default=3,
+        metavar="N",
+        help="with --work: reviews per ticket before it is blocked (default 3)",
+    )
     sub = parser.add_subparsers(dest="action")
     init = sub.add_parser(
         "setup", parents=[shared], help="choose local/hosted orchestrator, discover models and set up project"
@@ -180,7 +197,31 @@ def main():
         validate(profile)
         banner()
         if args.action == "do":
-            return run_batch(profile, project, args.count, checkpoint=args.checkpoint)
+            reviewer = None
+            choice = args.review or config.get("reviewer") or config.get("planner")
+            if choice and choice != "off":
+                if choice not in config["aliases"]:
+                    raise ValueError(f"Unknown reviewer alias: {choice}. Use --review ALIAS or --review off.")
+                reviewer = config["aliases"][choice]
+                validate(reviewer)
+            planner = None
+            fixer = args.recover or config.get("recovery") or config.get("planner")
+            if fixer and fixer != "off":
+                if fixer not in config["aliases"]:
+                    raise ValueError(f"Unknown recovery alias: {fixer}. Use --recover ALIAS or --recover off.")
+                planner = config["aliases"][fixer]
+                validate(planner)
+            if args.review_rounds < 1:
+                raise ValueError("--review-rounds must be at least 1")
+            return run_batch(
+                profile,
+                project,
+                args.count,
+                checkpoint=args.checkpoint,
+                reviewer=reviewer,
+                review_rounds=args.review_rounds,
+                planner=planner,
+            )
         return plan_session(profile, alias, project, args.request)
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)

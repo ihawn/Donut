@@ -41,3 +41,18 @@ def commit(project, message):
     if result.returncode:
         raise ValueError("git commit failed: " + (result.stderr or result.stdout).strip()[-500:])
     return _git(project, "rev-parse", "--short", "HEAD").stdout.strip()
+
+
+def diff(project, files, limit=30000):
+    """A unified diff of the given paths against HEAD, for a reviewer. New untracked files are listed by name."""
+    if not files or not is_repository(project):
+        return ""
+    tracked = _git(project, "ls-files", "--", *files).stdout.split()
+    has_head = _git(project, "rev-parse", "--verify", "HEAD").returncode == 0
+    text = _git(project, "diff", "HEAD", "--", *tracked).stdout if tracked and has_head else ""
+    new = [path for path in files if path not in tracked]
+    if new:
+        text += "\nNew files (read them directly):\n" + "\n".join("  " + path for path in new) + "\n"
+    if len(text) > limit:
+        text = text[:limit] + f"\n… diff truncated at {limit} characters; read the files for the rest.\n"
+    return text

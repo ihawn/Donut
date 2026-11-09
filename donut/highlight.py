@@ -25,14 +25,16 @@ _LABEL = re.compile(r"^\s*\[[^\]\n]*\]\s*$")
 _ERROR_START = re.compile(r"^\s*(?:\[Error\b|Error:|ERROR\b|Traceback \(|FAILED\b)")
 _HEADING = re.compile(r"^\s*(?:#{1,6}\s+.*|[A-Z][A-Z0-9 /·-]{5,}[A-Z0-9]\b.*|Run summary.*)$")
 _KEY_VALUE = re.compile(
-    r"^(\s*)(Project|Model|Planner|Worker|Run logs|Logs and results|Logs|Verifying|Queue|Checkpoints|Checkpoint):(\s)"
+    r"^(\s*)(Project|Model|Planner|Worker|Reviewer|Review|Recovery|Repair|VERDICT|RECOVERY|Run logs|Logs and results|Logs|Verifying|Queue|Checkpoints|Checkpoint):(\s)"
 )
-_TICKET_START = re.compile(r"^(\s*)(\[\d+/(?:\d+|all)\])(\s+)(\S+)(.*)$")
+_TICKET_START = re.compile(r"^(\s*)(\[(?:review )?\d+/(?:\d+|all)\])(\s+)(\S+)(.*)$")
 _BULLET = re.compile(r"^(\s*)([-*•]|\d+[.)])(\s+)")
 
-_GOOD = r"Done|PASS(?:ED)?|[Pp]assed|OK|[Ss]uccess(?:ful(?:ly)?)?|[Cc]omplete(?:d)?|[Aa]llowed|✓"
+_GOOD = r"REQUEUED|[Rr]equeued|APPROVED|[Aa]pproved|Done|PASS(?:ED)?|[Pp]assed|OK|[Ss]uccess(?:ful(?:ly)?)?|[Cc]omplete(?:d)?|[Aa]llowed|✓"
 _BAD = r"Blocked|BLOCKED|FAIL(?:ED|URE)?|[Ff]ailed|[Ff]ailure|Error|[Dd]enied|[Ss]topping|[Mm]issing|✗"
-_WARN = r"WARN(?:ING)?|[Ww]arning|[Ss]kipped|Human check|[Qq]ueued|TODO"
+_WARN = (
+    r"NEEDS HUMAN|CHANGES REQUESTED|[Cc]hanges requested|WARN(?:ING)?|[Ww]arning|[Ss]kipped|Human check|[Qq]ueued|TODO"
+)
 _PATH = r"(?:~|\.{1,2})?/?(?:[\w.-]+/)+[\w.-]+|\b[\w-]+(?:\.[\w-]+)*\.(?:md|py|cs|js|ts|tsx|jsx|json|ya?ml|toml|txt|sh|go|rs|java|kt|rb|php|c|h|cpp|hpp|unity|prefab|asset)\b"
 _TOKENS = re.compile(
     rf"(?P<code>`[^`\n]+`)"

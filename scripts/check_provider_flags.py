@@ -27,8 +27,8 @@ HELP = {"codex": ["codex", "exec", "--help"], "claude": ["claude", "--help"], "q
 def flags_for(profiles):
     flags = set()
     for profile in profiles:
-        for readonly in (False, True):
-            args, _ = command(profile, "probe", readonly=readonly)
+        for options in ({}, {"readonly": True}, {"review": True}):
+            args, _ = command(profile, "probe", **options)
             flags.update(arg for arg in args[1:] if arg.startswith("--"))
     return sorted(flags)
 

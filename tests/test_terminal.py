@@ -561,3 +561,87 @@ class QuotaFormattingTests(unittest.TestCase):
         self.assertEqual(countdown(500, now=1000), "")
         self.assertEqual(countdown(None), "")
         self.assertEqual((remaining(18.4), remaining(120), remaining(-5)), (82, 0, 100))
+
+
+class ReviewerTests(unittest.IsolatedAsyncioTestCase):
+    def app(self, temp, **extra):
+        config = {
+            "aliases": {
+                "claude": {"engine": "claude", "model": "claude-opus-5-5"},
+                "codex": {"engine": "codex", "model": "gpt-6.1"},
+                "local": {"engine": "ollama", "model": "qwen3.6"},
+            },
+            "planner": "claude",
+            "default_model": "local",
+            **extra,
+        }
+        self.saved = []
+        patcher = patch("donut.terminal.save", side_effect=lambda c: self.saved.append(dict(c)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with patch("donut.terminal.load", return_value=config):
+            return Donut(Path(temp))
+
+    async def test_reviewer_defaults_to_the_planner_and_can_be_changed_or_turned_off(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = self.app(temp)
+            self.assertEqual(app.profiles["review"]["model"], "claude-opus-5-5")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                self.assertIn("reviewer claude-opus-5-5", str(app.query_one("#status").render()))
+                app.execute("/review")
+                await pilot.pause()
+                menu = app.query_one(Menu)
+                self.assertEqual([row[1] for row in menu.visible_rows], ["planner", "claude", "codex", "local", "off"])
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                self.assertEqual(app.reviewer, "codex")
+                self.assertEqual(self.saved[-1]["reviewer"], "codex")
+                self.assertIn("reviewer gpt-6.1", str(app.query_one("#status").render()))
+                app.execute("/review off")
+                await pilot.pause()
+                self.assertIn("reviewer off", str(app.query_one("#status").render()))
+                app.execute("/review planner")
+                await pilot.pause()
+                self.assertNotIn("reviewer", self.saved[-1])
+                self.assertEqual(app.profiles["review"]["model"], "claude-opus-5-5")
+
+    async def test_work_passes_the_reviewer_and_the_spinner_follows_review_rounds(self):
+        import sys
+
+        with tempfile.TemporaryDirectory() as temp:
+            app = self.app(temp, reviewer="codex")
+            script = Path(temp) / "runner.py"
+            script.write_text(
+                "import json, os, pathlib, time\n"
+                "config = json.loads((pathlib.Path(os.environ['XDG_CONFIG_HOME']) / 'donut/config.json').read_text())\n"
+                "print('CONFIG', config.get('reviewer'), config['aliases'].get(config.get('reviewer'), {}).get('model'), flush=True)\n"
+                "print('[1/1] 001_jump.md \\u2014 fresh context', flush=True)\n"
+                "print('[review 1/3] 001_jump.md \\u2014 gpt-6.1, fresh context', flush=True)\n"
+                "print('RECOVERY', config.get('recovery'), config['aliases'].get(config.get('recovery'), {}).get('model'), flush=True)\n"
+                "print('[recover] 001_jump.md \\u2014 claude-opus-5-5, fresh context', flush=True)\n"
+                "time.sleep(0.6)\n"
+                "print('VERDICT: APPROVED', flush=True)\n"
+                "print('Review: approved', flush=True)\n"
+            )
+            turns = []
+            original = app.start_turn
+            app.start_turn = lambda role, detail="", activity="thinking": (
+                turns.append((role, activity)),
+                original(role, detail, activity),
+            )
+            launch = asyncio.create_subprocess_exec
+
+            async def fake_exec(*args, **kwargs):
+                return await launch(sys.executable, str(script), **kwargs)
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch("donut.terminal.asyncio.create_subprocess_exec", side_effect=fake_exec):
+                    await app.work_tickets("next 1")
+                lines = [strip.text.rstrip() for strip in app.query_one(RichLog).lines]
+            self.assertIn("CONFIG donut-reviewer gpt-6.1", lines)
+            self.assertIn(("review", "reviewing"), turns)
+            self.assertIn("RECOVERY donut-planner claude-opus-5-5", lines)
+            self.assertIn(("plan", "recovering a blocked ticket"), turns)
+            self.assertLess(turns.index(("work", "working")), turns.index(("review", "reviewing")))

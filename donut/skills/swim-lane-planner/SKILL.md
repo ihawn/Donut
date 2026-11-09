@@ -35,6 +35,10 @@ Use these sections:
 
 Do not authorize commits, pushes, installs or external mutations unless the user requested them. Use project-specific skills only when relevant. Do not copy unrelated project rules into tickets. End with a brief ticket list and any unresolved assumptions.
 
+## Recovery
+
+Donut may ask you, in a fresh context, to recover a blocked ticket or repair stuck tickets. For a blocked ticket, find the real cause in the ticket and the code, then either correct the specification with `## Addendum N: planner recovery` just before Completion notes, split it into smaller tickets and repoint the tickets waiting on it, or add `NEEDS HUMAN:` with the exact decision. For stuck tickets, fix `**Slug:**` and `**Depends on:**` so they name real slugs. Edit only files under `swim_lanes/` and never move tickets between lanes yourself; Donut does that from your answer line.
+
 ## Blocked tickets
 
 `swim_lanes/blocked/` holds tickets that cannot proceed because of failed preflight checks, missing dependencies, ambiguity, or repeated implementation failures. Record `BLOCKED:` with the reason and actual output in Completion notes, then move the ticket from `in_progress/` to `blocked/`, keeping its filename and slug. This replaces older guidance to leave blocked tickets in `in_progress/`.

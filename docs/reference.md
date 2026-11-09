@@ -24,6 +24,7 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
   | Full access | `bypassPermissions` | `never` approvals, no sandbox | `yolo` |
 
   A live Claude session switches mode immediately when idle; Codex applies the new policy from the next turn; Qwen starts each turn with it. `/work` passes the mode to its workers. Unattended workers cannot answer prompts, so Ask runs them as Accept edits.
+- `/review` picks the model that reviews each finished ticket: the planner (the default), any configured alias, or off. The choice is saved. See [Review loop](#review-loop).
 - Permission prompts appear inline above the prompt with the command or file diff. Press 1 to allow once, 2 to allow that kind of action for the rest of the session, 3 or Escape to deny.
 - Messages sent while a turn is running are queued and sent when it finishes, like Claude Code. Ctrl+C cancels the turn and puts queued messages back in the prompt. Free-form messages always go to the planner, including right after `/work`.
 - `/clear` starts a fresh conversation for the selected account/model. `/copy` copies the last answer. `/exit` closes the terminal.
@@ -105,6 +106,24 @@ No game-specific rules are copied from another project. If this project has `ski
 ## Execution and output
 
 Each ticket gets a fresh process with no resume/continue flag. Existing in-progress work is considered first, then the lowest numbered eligible ticket. Dependencies use `**Slug:**` and `**Depends on:**` metadata. A blocked ticket counts toward the requested number; its dependent tasks are skipped, while independent tasks can continue. `all` rechecks the queue, including newly added tickets. Process failure or an invalid lane transition stops the batch.
+
+### Review loop
+
+After a worker finishes a ticket and its Verify command (if any) passes, a reviewer checks the work in a fresh context. The reviewer is the planner model unless `/review` or `--review ALIAS` picks another; `--review off` (or `/review off`) turns it off. It gets the full ticket, the list of changed files, a diff against `HEAD` and the worker's completion notes, and can read the project but not change it (Claude: Read, Grep and Glob only; Codex: read-only sandbox; Qwen: plan mode).
+
+The reviewer ends with `VERDICT: APPROVED` or `VERDICT: CHANGES REQUESTED` and numbered fixes. On approval the batch moves on. On changes requested, Donut adds the feedback to the ticket body as `## Addendum N: review feedback`, just before Completion notes so it reads as part of the requirements, moves the ticket back to `in_progress/`, and starts a fresh worker run that addresses the feedback, then reviews again. After `--review-rounds` reviews without approval (default 3) the ticket moves to `blocked/` with the last feedback, and its dependents wait. If the reviewer fails or gives no verdict, the worker's result stands and the run says so. Each review is logged as `NNN.reviewN.log`, and `results.json` records the rounds and verdict.
+
+### Recovery
+
+When a ticket ends up in `blocked/` (the worker reported `BLOCKED:`, its Verify command failed, or the reviewer never approved), the planner gets one chance per run to recover it, in a fresh context. It receives the full ticket, the reason it stopped, the end of the worker's output and the tickets waiting on it, and reads the code the ticket names. Then it does one of three things:
+
+- **Requeue:** the specification was wrong or incomplete, so it adds `## Addendum N: planner recovery` correcting it. Donut moves the ticket back to `to_do/` and the run tries it again, within the same count.
+- **Split:** the ticket was too big, so it writes smaller tickets and points the waiting tickets at them. The original stays blocked.
+- **Needs human:** it adds a `NEEDS HUMAN:` line naming the decision, and the ticket stays blocked.
+
+When nothing else can run because tickets have broken metadata (a missing `Slug`, or `Depends on` naming files, sections or words instead of slugs), the planner repairs those lines once per run and the batch continues.
+
+The planner edits only ticket files; Donut moves tickets between lanes. In the terminal the planner selected there does the recovery; `donut --work` uses the configured planner, `--recover ALIAS` picks another, and `--recover off` turns recovery off. Its answers are logged as `NNN.recover.log` and `repair.log`.
 
 ### Ticket metadata
 

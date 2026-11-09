@@ -16,6 +16,10 @@ Paths are relative to the project root (the directory containing `swim_lanes/`).
 - A ticket may carry **Verify:** `command`. Donut runs that command itself after you move the ticket to done; if it fails, Donut moves the ticket to blocked/. Run it yourself first and never edit or remove the Verify line.
 - Keep the complete filename unchanged. Move to_do → in_progress before editing; in_progress → done only after verification.
 
+## Review addenda
+
+When review is on, a reviewer model checks each ticket you move to done, in a fresh context. If it requests changes, Donut adds its feedback to the ticket body as `## Addendum N: review feedback` (a planner fixing a blocked ticket adds `## Addendum N: planner recovery` the same way), just before Completion notes, and moves the ticket back to `in_progress/`. Treat addenda as part of the ticket's requirements. On a rework, address every point in the latest addendum within the ticket's scope, rerun the tests, update Completion notes, and move the ticket to done again. Do not edit or delete addenda.
+
 ## On-hold tickets
 
 `swim_lanes/on_hold/` contains deliberately parked tickets. Never pick, move, or edit them, even for a named-task assignment. Report that the ticket is on hold instead. It must first be explicitly released back to `to_do/` by the user or by a planner following the user's request. A held dependency is not complete; skip dependent work. Do not move blocked work into `on_hold/` automatically: move execution failures to `blocked/`.
