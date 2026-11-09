@@ -23,9 +23,9 @@ LOGO = r"""
     |    +    |          |    o    |            '-. .'
     |  o   +   \        /    *     |              |/
      \   *      '-.__.-'  o   +   /           .-''''''-.
-      '.    +    o    *    o    .'           / o  __  * \
-        '-._   *    +   o   _.-'            |  + (__) o  |
-            '-.__________.-'                 \ *      + /
+      '.    +    o    *    o    .'           / o .--. * \
+        '-._   *    +   o   _.-'            | +  (  )  o |
+            '-.__________.-'                 \ * '--' + /
                                               '-.____.-'
 """[1:]
 
@@ -62,8 +62,6 @@ def logo_segments():
             elif col_is_donut and char in _SPRINKLES:
                 color = _SPRINKLE_COLORS[sprinkle % len(_SPRINKLE_COLORS)]
                 sprinkle += 1
-            elif col >= _BUBBLE and row >= _HOLE_ROW and (char in "()" or (char == "_" and row < len(rows) - 1)):
-                color = "coral"  # The little hole in the donut hole.
             elif col_is_donut:
                 color = "orange"
             else:

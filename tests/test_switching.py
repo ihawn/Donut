@@ -55,7 +55,7 @@ class FakeQwen(Provider):
     pass  # Donut never switches Qwen in place; it hands the conversation over.
 
 
-class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
+class SwitchSetup(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -103,6 +103,8 @@ class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
         profile = dict(self.aliases[alias], **({"model": model} if model else {}))
         self.app.selected["plan"], self.app.profiles["plan"] = alias, profile
 
+
+class ModelSwitchTests(SwitchSetup):
     async def test_a_switched_model_keeps_the_whole_conversation(self):
         async with self.app.run_test() as pilot:
             await pilot.pause()
@@ -147,6 +149,41 @@ class ModelSwitchTests(unittest.IsolatedAsyncioTestCase):
             await self.send(pilot, "solo question")
             solo = Provider.made[-1]
             self.assertNotIn("plan a thing", solo.prompts[0])  # Solo is its own conversation, not the planner's.
+
+
+class RealCodexThroughDonutTests(SwitchSetup):
+    async def test_a_codex_reviewer_starts_its_own_thread(self):
+        """Donut's own bookkeeping must never touch the Codex thread id (it once set .thread to "review")."""
+        from donut import sessions
+
+        sent = []
+
+        async def request(session, method, params=None):
+            sent.append((method, params))
+            if method == "thread/start":
+                return {"thread": {"id": "0b6f5c1e-1d4e-4c62-9a8e-2f1f6f6d7a10"}}
+            session.turn_done.set_result(None)
+            return {}
+
+        async def connect(session):
+            pass
+
+        with (
+            patch("donut.terminal.CodexSession", sessions.CodexSession),
+            patch.object(sessions.CodexSession, "connect", connect),
+            patch.object(sessions.CodexSession, "request", request),
+        ):
+            self.app.selected["review"], self.app.profiles["review"] = "codex", dict(self.aliases["codex"])
+            self.app.reviewer = "chosen"
+            async with self.app.run_test() as pilot:
+                await pilot.pause()
+                await self.send(pilot, "/review")
+                await self.send(pilot, "https://github.com/x/y/pull/1431")
+                await self.send(pilot, "and again")
+        methods = [method for method, _ in sent]
+        self.assertEqual(methods.count("thread/start"), 1)
+        turns = [params for method, params in sent if method == "turn/start"]
+        self.assertEqual({turn["threadId"] for turn in turns}, {"0b6f5c1e-1d4e-4c62-9a8e-2f1f6f6d7a10"})
 
 
 class CodexSwitchTests(unittest.IsolatedAsyncioTestCase):

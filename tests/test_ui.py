@@ -68,8 +68,11 @@ class UITests(unittest.TestCase):
         runs = [run for line in logo_segments() for run in line]
         self.assertIn(("ok", "orange"), runs)
         self.assertIn(("thing.", "orange"), runs)
-        # The little hole inside the donut hole is coral, so it reads as a donut too.
-        self.assertIn("coral", {color for text, color in runs if "(" in text})
+        # The little donut has a round hole of its own, drawn like the big donut's: .--. over (  ) over '--'.
+        lines = LOGO.splitlines()
+        self.assertIn("(  )", lines[-3])
+        self.assertIn(".--.", lines[-4])
+        self.assertIn("'--'", lines[-2])
 
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()

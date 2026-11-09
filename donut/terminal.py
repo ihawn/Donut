@@ -1190,7 +1190,7 @@ class Donut(App):
             if session.handoff:
                 self.say(Text(f"  {model_name(profile, alias)} continues the conversation from {old_name}.", style=DIM))
         if track:
-            session.thread = thread
+            session.donut_conversation = thread  # Not .thread: Codex sessions keep their own thread id there.
             self.threads[thread] = session
         return session
 
@@ -1222,7 +1222,7 @@ class Donut(App):
 
     def remember_exchange(self, session, text):
         """Keep each conversation's exchanges, whatever model answers, so another model can pick them up."""
-        thread = getattr(session, "thread", None)
+        thread = getattr(session, "donut_conversation", None)
         if thread is None:
             return
         tools = "; ".join(self.turn_tools[:30])
