@@ -55,7 +55,7 @@ jobs:
           "$RUNNER_TEMP/donut-smoke/bin/donut" init
           test -f .donut/skills/swim-lane-worker/SKILL.md
           test -f skills/donut-planner/SKILL.md
-          test -f swim_lanes/to_do/.gitkeep
+          ls .donut/*/to_do/.gitkeep  # init makes the first session's tickets folder
       - name: Create SHA-256 checksums
         run: |
           cd dist
