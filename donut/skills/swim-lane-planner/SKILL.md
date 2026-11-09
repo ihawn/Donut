@@ -7,11 +7,11 @@ description: Research this project and write small self-contained swim-lane impl
 
 Read project instructions and actual code before writing tickets. Describe the user's intended change, not an invented redesign. Preserve unrelated work. Do not implement unless the user explicitly asks you to switch roles.
 
-Write Markdown tickets in swim_lanes/to_do/. Use NNN_YYYYMMDD-HHMM_specific-slug.md with a unique order number across all lanes. Append after the highest number; never renumber in_progress, done, or on_hold. Reference dependencies by slug, not number. Inspect existing tickets to avoid duplicates.
+Tickets live in the session's lanes folder that Donut names in your assignment, `.donut/<session>/` (older projects: `swim_lanes/`); lane names below are inside it, and other sessions' folders are not yours to touch. Write Markdown tickets in its to_do/. Use NNN_YYYYMMDD-HHMM_specific-slug.md with a unique order number across all lanes. Append after the highest number; never renumber in_progress, done, or on_hold. Reference dependencies by slug, not number. Inspect existing tickets to avoid duplicates.
 
 ## On-hold tickets
 
-`swim_lanes/on_hold/` contains user-parked tickets, not completed work. Preserve their filenames, numbers and slugs. Reserve their numbers when creating tickets and inspect them to avoid duplicate work. Move held tickets back to `to_do/` only when the user explicitly requests release; do not automatically resume them. Keep their specifications consistent when newly planned work changes something they rely on. A `to_do/` ticket must not depend on a held ticket: leave that work on hold too, or resolve the dependency with the user before queueing it. Workers never pick, move or edit held tickets. Holds are separate from execution failures in `blocked/`.
+`on_hold/` contains user-parked tickets, not completed work. Preserve their filenames, numbers and slugs. Reserve their numbers when creating tickets and inspect them to avoid duplicate work. Move held tickets back to `to_do/` only when the user explicitly requests release; do not automatically resume them. Keep their specifications consistent when newly planned work changes something they rely on. A `to_do/` ticket must not depend on a held ticket: leave that work on hold too, or resolve the dependency with the user before queueing it. Workers never pick, move or edit held tickets. Holds are separate from execution failures in `blocked/`.
 
 ## Ticket contents
 
@@ -37,10 +37,10 @@ Do not authorize commits, pushes, installs or external mutations unless the user
 
 ## Recovery
 
-Donut may ask you, in a fresh context, to recover a blocked ticket or repair stuck tickets. For a blocked ticket, find the real cause in the ticket and the code, then either correct the specification with `## Addendum N: planner recovery` just before Completion notes, split it into smaller tickets and repoint the tickets waiting on it, or add `NEEDS HUMAN:` with the exact decision. For stuck tickets, fix `**Slug:**` and `**Depends on:**` so they name real slugs. Edit only files under `swim_lanes/` and never move tickets between lanes yourself; Donut does that from your answer line.
+Donut may ask you, in a fresh context, to recover a blocked ticket or repair stuck tickets. For a blocked ticket, find the real cause in the ticket and the code, then either correct the specification with `## Addendum N: planner recovery` just before Completion notes, split it into smaller tickets and repoint the tickets waiting on it, or add `NEEDS HUMAN:` with the exact decision. For stuck tickets, fix `**Slug:**` and `**Depends on:**` so they name real slugs. Edit only files under the session's lanes folder and never move tickets between lanes yourself; Donut does that from your answer line.
 
 ## Blocked tickets
 
-`swim_lanes/blocked/` holds tickets that cannot proceed because of failed preflight checks, missing dependencies, ambiguity, or repeated implementation failures. Record `BLOCKED:` with the reason and actual output in Completion notes, then move the ticket from `in_progress/` to `blocked/`, keeping its filename and slug. This replaces older guidance to leave blocked tickets in `in_progress/`.
+`blocked/` holds tickets that cannot proceed because of failed preflight checks, missing dependencies, ambiguity, or repeated implementation failures. Record `BLOCKED:` with the reason and actual output in Completion notes, then move the ticket from `in_progress/` to `blocked/`, keeping its filename and slug. This replaces older guidance to leave blocked tickets in `in_progress/`.
 
 Never pick or automatically retry tickets in `blocked/`, including named assignments. Their dependencies are not complete. A planner may investigate and clarify the blocker, but move the ticket back to `to_do/` only when the user explicitly requests another attempt and the blocker is addressed. Reserve blocked ticket numbers and slugs, avoid duplicate tickets, and preserve their completion notes. Keep active work that depends on blocked tickets out of the runnable queue. Workers continue independent eligible tickets.

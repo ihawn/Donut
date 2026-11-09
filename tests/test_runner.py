@@ -120,6 +120,60 @@ print('finished', p.name)
         self.assertEqual(len(runner.tasks(self.project, "to_do")), 2)
         self.assertEqual(len(self.calls.read_text().splitlines()), 2)  # One worker plus summary.
 
+    def test_a_session_works_only_its_own_tickets_folder(self):
+        from donut import workspace
+
+        self.ticket(1, "old")  # swim_lanes/, from before sessions.
+        lanes = workspace.create(self.project, "s1")
+        (lanes / "to_do" / "001_new.md").write_text("**Slug:** `new`\n**Depends on:** None\n")
+        result = self.run_batch("all", "--session", "s1", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Tickets: .donut/s1/", result.stdout)
+        self.assertEqual([p.name for p in runner.tasks(self.project, "done", lanes)], ["001_new.md"])
+        self.assertEqual(len(runner.tasks(self.project, "to_do")), 1)  # swim_lanes/ is left alone.
+        worker = json.loads(self.calls.read_text().splitlines()[0])
+        prompt = worker[worker.index("--prompt") + 1]
+        self.assertIn(".donut/s1/on_hold/", prompt)
+        self.assertNotIn("swim_lanes", prompt)
+        # Without --session, a command-line run uses the latest session.
+        (lanes / "to_do" / "002_more.md").write_text("**Slug:** `more`\n**Depends on:** None\n")
+        result = self.run_batch("1", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(runner.tasks(self.project, "done", lanes)), 2)
+
+    def test_worker_output_follows_verbosity_and_the_log_keeps_everything(self):
+        events = [
+            {"type": "stream_event", "event": {"type": "content_block_start", "content_block": {"type": "thinking"}}},
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}},
+            },
+            {"type": "stream_event", "event": {"type": "content_block_start", "content_block": {"type": "text"}}},
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Fixing it."}},
+            },
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Bash"}},
+            },
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok\nall good"}]}},
+        ]
+        lines = [json.dumps(event) for event in events]
+
+        def shown(level):
+            return "".join(runner.render_event(line, model="m", level=level) for line in lines)
+
+        self.assertEqual(shown("quiet"), "")
+        self.assertIn("Fixing it.", shown("normal"))
+        self.assertNotIn("Tool", shown("normal"))
+        self.assertNotIn("hmm", shown("normal"))
+        self.assertIn("[Tool: Bash]", shown("verbose"))
+        self.assertIn("2 lines", shown("verbose"))
+        self.assertNotIn("all good", shown("verbose"))
+        self.assertIn("hmm", shown("full"))
+        self.assertIn("all good", shown("full"))
+
     def test_count_and_unique_sessions(self):
         for n in range(1, 4):
             self.ticket(n, f"task{n}")

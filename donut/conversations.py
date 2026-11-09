@@ -54,7 +54,7 @@ def get(record_id):
     return next((record for record in load_all() if record["id"] == record_id), None)
 
 
-def record_turn(record_id, project, mode, role, alias, model, provider_id, user_text, answer):
+def record_turn(record_id, project, mode, role, alias, model, provider_id, user_text, answer, session=None):
     """Add one exchange to a conversation, creating it on its first turn. Returns the record's id."""
     records = load_all()
     record = next((r for r in records if r["id"] == record_id), None) if record_id else None
@@ -70,6 +70,8 @@ def record_turn(record_id, project, mode, role, alias, model, provider_id, user_
         }
         records.append(record)
     record.update(mode=mode, role=role, alias=alias, model=model or "", updated=now)
+    if session:
+        record["session"] = session  # The tickets folder, .donut/<session>/, that /resume switches back to.
     if provider_id:
         record["provider_id"] = provider_id
     record["turns"] = record.get("turns", 0) + 1
@@ -89,3 +91,42 @@ def ago(timestamp, now=None):
         if seconds >= size:
             return f"{seconds // size}{unit} ago"
     return "just now"
+
+
+def projects_path():
+    return store_path().with_name("projects.json")
+
+
+def remember_project(project):
+    """Note that Donut opened this project, newest first, for /project."""
+    project = str(Path(project).resolve())
+    try:
+        known = json.loads(projects_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        known = []
+    known = [project] + [p for p in known if isinstance(p, str) and p != project]
+    path = projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temp = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(known[:KEEP_RECORDS], file, indent=1)
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+def recent_projects():
+    """Projects Donut has opened or talked about, most recent first, that still exist."""
+    try:
+        known = json.loads(projects_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        known = []
+    by_use = sorted(load_all(), key=lambda record: record.get("updated", 0), reverse=True)
+    ordered = []
+    for project in [p for p in known if isinstance(p, str)] + [r.get("project") for r in by_use]:
+        if project and project not in ordered and Path(project).is_dir():
+            ordered.append(project)
+    return ordered

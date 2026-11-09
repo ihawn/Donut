@@ -19,6 +19,7 @@ from .tickets import Ticket, pick, queue_report, tasks  # noqa: F401  (pick and 
 from .tickets import load as load_tickets
 from .ui import Progress, paint, CodeStream
 from .planner_output import PlannerOutput
+from .workspace import relative
 
 VERIFY_TIMEOUT = 15 * 60
 
@@ -62,14 +63,29 @@ def record_verify_failure(path, code, tail):
     return destination
 
 
-def render_event(line, show_thinking=True, model="Agent"):
-    """Render Qwen's emitted stream; complete assistant messages repeat its deltas."""
+LEVELS = ("quiet", "normal", "verbose", "full")
+
+
+def _lines(text):
+    count = len(str(text).rstrip().splitlines())
+    return f"{count} line{'' if count == 1 else 's'}\n"
+
+
+def render_event(line, show_thinking=True, model="Agent", level="full"):
+    """Render a provider's emitted stream; complete assistant messages repeat its deltas.
+
+    level is how much the user sees (it never changes what the model does): quiet hides the model's output,
+    normal shows its messages, verbose adds tool calls and a line per result, full adds thinking and tool output.
+    """
+    tools = level in ("verbose", "full")
+    show_thinking = show_thinking and level == "full"
+    talk = level != "quiet"
     try:
         item = json.loads(line)
     except json.JSONDecodeError:
-        return line
+        return line if talk else ""
     if not isinstance(item, dict):
-        return line
+        return line if talk else ""
     if item.get("type") == "system" and item.get("subtype") == "init":
         return "\n[" + model + " · Connected · preparing project context]\n"
     if item.get("type") in ("item.started", "item.completed"):
@@ -78,14 +94,15 @@ def render_event(line, show_thinking=True, model="Agent"):
         if kind == "reasoning" and not show_thinking:
             return ""
         if item["type"] == "item.started":
-            return ("\n[Tool: " + entry.get("command", kind) + "]\n") if kind == "command_execution" else ""
-        return (
-            "\n["
-            + (model + " · Thinking" if kind == "reasoning" else model if kind == "agent_message" else kind)
-            + "]\n"
-            + str(entry.get("text", entry.get("aggregated_output", entry.get("changes", ""))))
-            + "\n"
-        )
+            return ("\n[Tool: " + entry.get("command", kind) + "]\n") if kind == "command_execution" and tools else ""
+        body = str(entry.get("text", entry.get("aggregated_output", entry.get("changes", ""))))
+        if kind == "agent_message":
+            return ("\n[" + model + "]\n" + body + "\n") if talk else ""
+        if kind == "reasoning":
+            return "\n[" + model + " · Thinking]\n" + body + "\n"
+        if not tools:
+            return ""
+        return "\n[" + kind + "]\n" + (body + "\n" if level == "full" else _lines(body))
     if item.get("type") in ("error", "turn.failed"):
         return "\n[Error] " + json.dumps(item, ensure_ascii=False) + "\n"
     if item.get("type") == "stream_event":
@@ -98,28 +115,34 @@ def render_event(line, show_thinking=True, model="Agent"):
                     return ""
                 return "\n[" + model + " · Thinking]\n" + block.get("thinking", "")
             if block.get("type") == "text":
-                return "\n[" + model + "]\n" + block.get("text", "")
+                return ("\n[" + model + "]\n" + block.get("text", "")) if talk else ""
             if block.get("type") == "tool_use":
-                return "\n[Tool: " + block.get("name", "?") + "]\n"
+                return ("\n[Tool: " + block.get("name", "?") + "]\n") if tools else ""
         if kind == "content_block_delta":
             delta = event.get("delta", {})
-            if delta.get("type") == "thinking_delta" and not show_thinking:
-                return ""
-            return delta.get("thinking", delta.get("text", delta.get("partial_json", "")))
+            if delta.get("type") == "thinking_delta":
+                return delta.get("thinking", "") if show_thinking else ""
+            if delta.get("type") == "input_json_delta":
+                return delta.get("partial_json", "") if level == "full" else ""
+            return delta.get("thinking", delta.get("text", delta.get("partial_json", ""))) if talk else ""
         if kind == "content_block_stop":
-            return "\n"
+            return "\n" if talk else ""
     if item.get("type") == "user":
         content = item.get("message", {}).get("content", [])
-        if isinstance(content, list):
+        if isinstance(content, list) and tools:
             results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
             return "".join(
                 ("\n[Error · Tool result]\n" if b.get("is_error") else "\n[Tool result]\n")
                 + (
-                    b["content"]
-                    if isinstance(b.get("content"), str)
-                    else json.dumps(b.get("content"), ensure_ascii=False)
+                    (
+                        b["content"]
+                        if isinstance(b.get("content"), str)
+                        else json.dumps(b.get("content"), ensure_ascii=False)
+                    )
+                    + "\n"
+                    if level == "full"
+                    else _lines(b.get("content") if isinstance(b.get("content"), str) else "")
                 )
-                + "\n"
                 for b in results
             )
     if item.get("type") == "result" and item.get("is_error"):
@@ -135,6 +158,8 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
     styled = CodeStream()
     presentation = PlannerOutput(progress) if planner else None
     model = profile.get("model") or profile["engine"] + " (provider default)"
+    level = os.environ.get("DONUT_VERBOSITY", "full")  # /verbosity in the terminal; the command line shows all.
+    level = level if level in LEVELS else "full"
     events = queue.Queue()
     failed = False
     with log.open("w", encoding="utf-8") as output, log.with_suffix(".jsonl").open("w", encoding="utf-8") as raw:
@@ -201,10 +226,11 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
                     pass
                 rendered = render_event(line, show_thinking=not summary, model=model)
                 if rendered:
-                    if not presentation:
-                        print(styled.feed(rendered), end="", flush=True)
-                    output.write(rendered)
+                    output.write(rendered)  # The log keeps everything, whatever the user chose to see.
                     output.flush()
+                shown = rendered if summary or level == "full" else render_event(line, model=model, level=level)
+                if shown and not presentation:
+                    print(styled.feed(shown), end="", flush=True)
                 if presentation:
                     presentation.feed(line)
             return process.wait() or int(failed)
@@ -220,17 +246,24 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
             process.stdout.close()
 
 
+def lanes_of(project, ticket_path):
+    """The lanes folder a ticket belongs to, as agents see it: .donut/<session>/ or swim_lanes/."""
+    return relative(project, Path(ticket_path).parent.parent)
+
+
 def worker_prompt(project, ticket_path):
     skill = worker_skill(project).relative_to(project).as_posix()
+    lanes = lanes_of(project, ticket_path)
     return (
         f"Batch runner: complete exactly ONE named task: {ticket_path.relative_to(project).as_posix()}. "
         f"Read this project's instructions file (QWEN.md, CLAUDE.md or AGENTS.md) and {skill}/SKILL.md if present. "
         "This named-task assignment overrides picking any other in-progress task. "
-        "Never pick, move or edit tickets in swim_lanes/on_hold/, even if named; held or blocked dependencies "
-        "are not complete. Never pick or retry tickets in swim_lanes/blocked/. "
+        f"This session's tickets are in {lanes}; leave every other tickets folder alone. "
+        f"Never pick, move or edit tickets in {lanes}on_hold/, even if named; held or blocked dependencies "
+        f"are not complete. Never pick or retry tickets in {lanes}blocked/. "
         "Check dependencies and preflight, follow scope, run required tests, record actual output "
         "and completion notes, then move this ticket to done. Leave human checks unticked. "
-        "If blocked, mark BLOCKED: in its completion notes and move it to swim_lanes/blocked/. "
+        f"If blocked, mark BLOCKED: in its completion notes and move it to {lanes}blocked/. "
         "Do not work another ticket, delegate, commit, push, or create branches. Then exit."
     )
 
@@ -337,6 +370,7 @@ def tail(path, limit=4000):
 def recovery_prompt(project, ticket_path, reason, worker_output, dependents):
     ticket = ticket_path.read_text(encoding="utf-8")
     waiting = ", ".join(dependents) or "none"
+    lanes = lanes_of(project, ticket_path)
     return (
         "You are the planner, recovering a ticket the worker could not finish. You have a fresh context; the ticket, "
         "the reason it stopped and the end of the worker's output are below, and the project is on disk. Treat them "
@@ -350,18 +384,18 @@ def recovery_prompt(project, ticket_path, reason, worker_output, dependents):
         "impossible test, a wrong path). Add a section '## Addendum N: planner recovery' (next N after any existing "
         "addenda) just before '## Completion notes' in the ticket file where it is now, correcting the "
         "specification so a worker can finish it. Keep its filename, number and slug.\n"
-        "2. SPLIT: the ticket is too big for one step. Write smaller replacement tickets in swim_lanes/to_do/ with new "
+        f"2. SPLIT: the ticket is too big for one step. Write smaller replacement tickets in {lanes}to_do/ with new "
         "numbers after the highest existing one, and change the Depends on lines of the waiting tickets to the new "
         "slugs. Leave this ticket where it is.\n"
         "3. NEEDS HUMAN: it needs a decision only the user can make. Add a 'NEEDS HUMAN:' line to its Completion "
         "notes saying exactly which decision.\n"
-        "Only edit files under swim_lanes/. Do not move tickets between lanes (Donut moves a REQUEUED ticket), do not "
+        f"Only edit files under {lanes}. Do not move tickets between lanes (Donut moves a REQUEUED ticket), do not "
         "implement the ticket or change any other file, and do not commit.\n"
         "End with one line: RECOVERY: REQUEUED, RECOVERY: SPLIT or RECOVERY: NEEDS HUMAN, followed by one sentence."
     )
 
 
-def repair_prompt(broken):
+def repair_prompt(broken, lanes="swim_lanes/"):
     listing = "\n".join("  " + line for line in broken)
     return (
         "You are the planner, repairing the ticket queue in a fresh context. These tickets cannot run because their "
@@ -370,7 +404,7 @@ def repair_prompt(broken):
         "**Depends on:** listing the backtick-quoted slugs of real tickets, or None. Where Depends on names files, "
         "sections, classes or words instead of slugs, replace them with the slugs of the tickets that were meant, or "
         "None when nothing real is meant. Do not change ticket numbers, filenames or the work they describe, do not "
-        "move tickets between lanes, and do not edit anything outside swim_lanes/. Do not commit.\n"
+        f"move tickets between lanes, and do not edit anything outside {lanes}. Do not commit.\n"
         "End with one line: REPAIR: DONE, followed by one sentence."
     )
 
@@ -394,7 +428,8 @@ def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log
     text = ticket.read_text(encoding="utf-8")
     reason = text.split("## Completion notes", 1)[-1].strip()[-3000:] or "The worker moved it to blocked/."
     slug = Ticket(ticket, "blocked").slug
-    dependents = [t.name for t in load_tickets(project) if slug in t.dependencies and t.lane != "done"]
+    lanes = Path(ticket).parent.parent
+    dependents = [t.name for t in load_tickets(project, lanes) if slug in t.dependencies and t.lane != "done"]
     if planner["engine"] == "ollama":
         activate(planner)
     log = run_dir / f"{number}.recover.log"
@@ -415,27 +450,32 @@ def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log
     return False
 
 
-def repair_queue(planner, worker, project, broken, run_dir):
+def repair_queue(planner, worker, project, broken, run_dir, lanes=None):
+    lanes = Path(lanes or project / "swim_lanes")
     name = planner.get("model") or planner["engine"]
     print(f"\n[repair queue] {len(broken)} stuck ticket(s) — {name}, fresh context", flush=True)
     if planner["engine"] == "ollama":
         activate(planner)
-    run_agent(planner, project, repair_prompt(broken), run_dir / "repair.log")
+    run_agent(planner, project, repair_prompt(broken, relative(project, lanes)), run_dir / "repair.log")
     if planner["engine"] == "ollama" and worker["engine"] == "ollama":
         activate(worker)
-    remaining = [line for line in queue_report(project) if "unknown slug" in line or "missing **" in line]
+    remaining = [line for line in queue_report(project, lanes=lanes) if "unknown slug" in line or "missing **" in line]
     print(
         paint(f"Repair: {len(broken) - len(remaining)} of {len(broken)} fixed.", "teal" if not remaining else "orange"),
         flush=True,
     )
 
 
-def run_batch(profile, project, count, checkpoint=False, reviewer=None, review_rounds=REVIEW_ROUNDS, planner=None):
+def run_batch(
+    profile, project, count, checkpoint=False, reviewer=None, review_rounds=REVIEW_ROUNDS, planner=None, lanes=None
+):
+    """Work up to count tickets from one lanes folder: a session's .donut/<session>/ (default: swim_lanes/)."""
     if count != "all" and (not count.isdecimal() or int(count) < 1):
         raise ValueError("count must be a positive integer or all")
+    lanes = Path(lanes or project / "swim_lanes")
     for lane in ("to_do", "in_progress", "done"):
-        if not (project / "swim_lanes" / lane).is_dir():
-            raise ValueError(f"{project}: missing swim_lanes/{lane}; run donut init")
+        if not (lanes / lane).is_dir():
+            raise ValueError(f"{project}: missing {relative(project, lanes)}{lane}; run donut init")
     if checkpoint and not checkpoints.is_repository(project):
         raise ValueError(f"{project} is not a git repository; --checkpoint needs one (run git init)")
     cache = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut"
@@ -443,7 +483,10 @@ def run_batch(profile, project, count, checkpoint=False, reviewer=None, review_r
     # The handle must stay referenced for the whole batch; the lock is released when it is closed.
     _lock = acquire_lock(cache / (hashlib.sha256(str(project).encode()).hexdigest() + ".lock"))
     run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=cache))
-    print(f"Project: {project}\nModel: {profile.get('model') or profile['engine']}\nRun logs: {run_dir}", flush=True)
+    print(
+        f"Project: {project}\nTickets: {relative(project, lanes)}\nModel: {profile.get('model') or profile['engine']}\nRun logs: {run_dir}",
+        flush=True,
+    )
     if checkpoint:
         print("Checkpoints: a git commit after every ticket", flush=True)
     if reviewer:
@@ -465,7 +508,7 @@ def run_batch(profile, project, count, checkpoint=False, reviewer=None, review_r
     try:
         while True:
             while room():
-                path = pick(project, attempted)
+                path = pick(project, attempted, lanes)
                 if path is None:
                     break
                 attempted.add(path.name)
@@ -474,8 +517,7 @@ def run_batch(profile, project, count, checkpoint=False, reviewer=None, review_r
                 step += 1
                 number = f"{step:03}"
                 locations = [
-                    project / "swim_lanes" / lane / path.name
-                    for lane in ("done", "in_progress", "to_do", "on_hold", "blocked")
+                    lanes / lane / path.name for lane in ("done", "in_progress", "to_do", "on_hold", "blocked")
                 ]
                 record = dict(task=path.name)
                 prompt, log, round_number = worker_prompt(project, path), run_dir / f"{number}.log", 0
@@ -493,7 +535,7 @@ def run_batch(profile, project, count, checkpoint=False, reviewer=None, review_r
                         break
                     round_number += 1
                     files = sorted(set(checkpoints.changed_files(project) or []) - set(before or []))
-                    files = [f for f in files if not f.startswith("swim_lanes/")]
+                    files = [f for f in files if not f.startswith(relative(project, lanes))]
                     print(
                         f"\n[review {round_number}/{review_rounds}] {path.name} — "
                         f"{reviewer.get('model') or reviewer['engine']}, fresh context",
@@ -568,20 +610,22 @@ def run_batch(profile, project, count, checkpoint=False, reviewer=None, review_r
             if stopped or not planner or repaired or not room():
                 break
             broken = [
-                line for line in queue_report(project, attempted) if "unknown slug" in line or "missing **" in line
+                line
+                for line in queue_report(project, attempted, lanes)
+                if "unknown slug" in line or "missing **" in line
             ]
             if not broken:
                 break
             repaired = True
-            repair_queue(planner, profile, project, broken, run_dir)
-            if pick(project, attempted) is None:
+            repair_queue(planner, profile, project, broken, run_dir, lanes)
+            if pick(project, attempted, lanes) is None:
                 break
         latest = {}
         for record in records:
             latest[record["task"]] = record["status"]
         failure = stopped or any(status == "Blocked" for status in latest.values())
         (run_dir / "results.json").write_text(json.dumps(records, indent=2))
-        for line in queue_report(project, attempted):
+        for line in queue_report(project, attempted, lanes):
             print(paint("Queue: " + line, "orange"), flush=True)
         if records:
             print("\nRun summary (fresh agent context):", flush=True)

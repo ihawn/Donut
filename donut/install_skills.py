@@ -56,7 +56,13 @@ def worker_skill(project):
     return skills_dir(project) / "swim-lane-worker"
 
 
-def install(project, home, quiet=False):
+def install(project, home, quiet=False, session=None):
+    """Install the skills and make the session's lanes, .donut/<session>/ (swim_lanes/ when session is None).
+
+    Returns the lanes folder.
+    """
+    from .workspace import create, relative as lanes_relative
+
     report = (lambda *args: None) if quiet else print
     if not project.is_dir():
         raise ValueError(f"Project directory does not exist: {project}")
@@ -97,10 +103,7 @@ def install(project, home, quiet=False):
             report(f"Installed: {relative}")
         else:
             update_lane_rules(project, dest, planner_source)
-    for lane in ("to_do", "in_progress", "on_hold", "blocked", "done"):
-        folder = project / "swim_lanes" / lane
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / ".gitkeep").touch(exist_ok=True)
+    lanes = create(project, session)
     text = qwen.read_text(encoding="utf-8") if qwen.exists() else "# Qwen project instructions\n"
     imports = ["@./" + worker_skill(project).relative_to(project).as_posix() + "/SKILL.md"]
     rules = project / "skills/project-rules/SKILL.md"
@@ -109,7 +112,9 @@ def install(project, home, quiet=False):
     additions = [line for line in imports if line[2:] not in text]
     if additions:
         qwen.write_text(text.rstrip() + "\n\n## Swim-lane worker\n\n" + "\n\n".join(additions) + "\n")
-    report(f"Ready: {project}\nRun donut, then /plan to write tickets or /work next 1 to build the next ticket.")
+    report(f"Ready: {project}\nTickets: {lanes_relative(project, lanes)}")
+    report("Run donut, then /plan to write tickets or /work next 1 to build the next ticket.")
+    return lanes
 
 
 def main():
@@ -118,7 +123,10 @@ def main():
     parser.add_argument("-p", "--project", default=".")
     args = parser.parse_args()
     try:
-        install(Path(args.project).expanduser().resolve(), Path.home())
+        project = Path(args.project).expanduser().resolve()
+        from .workspace import default
+
+        install(project, Path.home(), session=default(project))
     except (ValueError, OSError) as error:
         parser.exit(1, f"{error}\n")
 

@@ -83,8 +83,11 @@ class CLITests(unittest.TestCase):
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(main(), 0)
+        # A new project gets its first session's tickets folder, .donut/<session>/.
+        (session,) = [path.parent for path in (self.root / ".donut").glob("*/to_do")]
         for lane in ("to_do", "in_progress", "done"):
-            self.assertTrue((self.root / "swim_lanes" / lane).is_dir())
+            self.assertTrue((session / lane).is_dir())
+        self.assertFalse((self.root / "swim_lanes").exists())
         self.assertTrue((self.root / "skills/donut-planner/SKILL.md").is_file())
         self.assertEqual(run.call_count, 2)
         second = run.call_args.args[2]
@@ -95,34 +98,39 @@ class CLITests(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs.get("summary", False))
         self.assertTrue(run.call_args.kwargs["planner"])
         self.assertEqual(output.getvalue().count("PLANNING COMPLETE"), 2)
-        self.assertEqual(output.getvalue().count("Try exiting the shell and running `donut --work next 1`"), 2)
+        self.assertEqual(
+            output.getvalue().count(
+                f"Try exiting the shell and running `donut --work next 1 --session {session.name}`"
+            ),
+            2,
+        )
 
     def test_interactive_planning_hides_thinking_and_lists_created_tickets(self):
         save({"aliases": {"planner": {"engine": "codex"}}, "planner": "planner"})
         script = self.root / "fake_planner.py"
         script.write_text(
             "import sys, json\nfrom pathlib import Path\nprompt = sys.stdin.read()\n"
-            "assert 'swim_lanes/to_do/' in prompt\n"
-            "Path('swim_lanes/to_do/001_menu.md').write_text('**Slug:** `menu`\\n**Depends on:** None\\n')\n"
+            "assert '.donut/first/to_do/' in prompt\n"
+            "Path('.donut/first/to_do/001_menu.md').write_text('**Slug:** `menu`\\n**Depends on:** None\\n')\n"
             "print(json.dumps({'type': 'item.completed', 'item': {'type': 'reasoning', 'text': 'Checking menu scope'}}))\n"
             "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Created the menu ticket'}}))\n"
         )
         output = io.StringIO()
         with (
-            patch("sys.argv", ["donut", "--plan", "-p", str(self.root)]),
+            patch("sys.argv", ["donut", "--plan", "-p", str(self.root), "--session", "first"]),
             patch("builtins.input", side_effect=["Plan a menu", "/exit"]),
             patch("donut.runner.command", return_value=([sys.executable, str(script)], os.environ.copy())),
             patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state")}),
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(main(), 0)
-        self.assertTrue((self.root / "swim_lanes/to_do/001_menu.md").is_file())
+        self.assertTrue((self.root / ".donut/first/to_do/001_menu.md").is_file())
         self.assertNotIn("Checking menu scope", output.getvalue())
         logs = list((self.root / "state").glob("donut/plan-*/001.log"))
         self.assertEqual(len(logs), 1)
         self.assertIn("Checking menu scope", logs[0].read_text())
         self.assertIn("Tickets created: 1", output.getvalue())
-        self.assertIn("swim_lanes/to_do/001_menu.md", output.getvalue())
+        self.assertIn(".donut/first/to_do/001_menu.md", output.getvalue())
         self.assertIn("Created the menu ticket", output.getvalue())
         self.assertIn("PLANNING COMPLETE", output.getvalue())
 

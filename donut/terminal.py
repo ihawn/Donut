@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from rich.style import Style
 from rich.text import Text
 from textual import work
 from textual.message import Message
@@ -29,6 +30,8 @@ from .summaries import claude_context, codex_context, mcp_servers, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
+from . import background, plugins, ponytail, workspace
+from .platform import copy_native, open_window, window_command
 from .platform import process_options
 from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
 from .ui import COLORS, logo_segments, release_version
@@ -151,6 +154,86 @@ def pack_entries(entries, width, gap="  "):
     return packed
 
 
+URL = re.compile(r"https?://[^\s<>()\[\]{}`'\"]*[^\s<>()\[\]{}`'\".,;:!?*]")
+
+
+def link_markdown(source):
+    """Turn bare URLs into Markdown autolinks so they render as clickable links; code is left alone."""
+    parts = re.split(r"(```.*?(?:```|$)|`[^`\n]*`)", source, flags=re.S)
+    for index in range(0, len(parts), 2):  # Even parts are outside code.
+
+        def autolink(match):
+            before = parts[index][max(0, match.start() - 2) : match.start()]
+            return match[0] if before.endswith(("](", "<")) else f"<{match[0]}>"
+
+        parts[index] = URL.sub(autolink, parts[index])
+    return "".join(parts)
+
+
+def markdown(source):
+    from rich.markdown import Markdown
+
+    return Markdown(link_markdown(source), hyperlinks=True)
+
+
+def link_text(text):
+    """Give each URL in a Text a link style, which the terminal shows as a hyperlink and Donut opens on click."""
+    for match in URL.finditer(text.plain):
+        text.stylize(Style(link=match[0], underline=True), match.start(), match.end())
+    return text
+
+
+class Transcript(RichLog, can_focus=False):
+    """The conversation log, with mouse selection: drag to select, and the selection is copied on release."""
+
+    ALLOW_SELECT = True
+
+    def get_selection(self, selection):
+        text = "\n".join(strip.text.rstrip() for strip in self.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection):
+        self._line_cache.clear()
+        self.refresh()
+
+    def on_mouse_scroll_up(self, event):
+        self.app.follow = False  # Reading back: new output no longer pulls the view down.
+
+    def on_mouse_scroll_down(self, event):
+        def back_at_end():
+            if self.scroll_y >= self.max_scroll_y - 1:
+                self.app.follow = True
+
+        self.call_after_refresh(back_at_end)
+
+    def _render_line(self, y, scroll_x, width):
+        from rich.segment import Segment
+        from textual.strip import Strip
+
+        if y >= len(self.lines):
+            return Strip.blank(width, self.rich_style)
+        selection = self.text_selection
+        key = (y + self._start_line, scroll_x, width, self._widest_line_width)
+        if selection is None and key in self._line_cache:
+            return self._line_cache[key]
+        strip = self.lines[y]
+        span = selection.get_span(y) if selection is not None else None
+        if span is not None:
+            start, end = span
+            end = strip.cell_length if end == -1 else end
+            # Only the selection's background, so selected text keeps its own colors and stays readable.
+            highlight = Style(bgcolor=self.screen.get_component_rich_style("screen--selection").bgcolor or "#2f5f8a")
+            end = max(start, min(end, strip.cell_length))
+            before, middle, after = strip.crop(0, start), strip.crop(start, end), strip.crop(end, strip.cell_length)
+            middle = Strip([Segment(text, (style or Style()) + highlight, control) for text, style, control in middle])
+            strip = Strip.join([before, middle, after])
+        # The offsets let Textual map a mouse position to a place in the text, which selection needs.
+        line = strip.crop_extend(scroll_x, scroll_x + width, self.rich_style).apply_offsets(scroll_x, y)
+        if selection is None:
+            self._line_cache[key] = line
+        return line
+
+
 def model_name(profile, alias):
     return profile.get("model") or alias or "provider default"
 
@@ -165,14 +248,18 @@ COMMANDS = [
     ("/reviewer", "Choose who reviews: same as planner, any model, or off"),
     ("/soloist", "Choose the soloist's account and model"),
     ("/model", "Choose the model for the current mode"),
-    ("/resume", "Resume an earlier conversation in its mode and model"),
+    ("/resume", "Resume an earlier conversation in its mode, model and tickets session"),
+    ("/session", "Switch this window's tickets folder, .donut/<session>/, or start a new one"),
+    ("/project", "Open another project in a new window"),
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
     ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
+    ("/verbosity", "How much of the work Donut shows you mid-turn; models think and answer the same"),
     ("/usage", "Show usage for each configured connection"),
     ("/plugin", "Browse the provider's plugin commands"),
     ("/mcp", "Show MCP server status"),
     ("/context", "Show context usage for this conversation"),
-    ("/clear", "Start a fresh conversation; tickets are kept"),
+    ("/clear", "Start completely fresh: new conversation, empty screen; tickets are kept"),
+    ("/new", "Same as /clear"),
     ("/copy", "Copy the last answer"),
     ("/native", "Open the provider's own client, then come back"),
     ("/help", "List commands and keys"),
@@ -215,6 +302,29 @@ def _command_text(details):
 def _clip(text, width=160):
     text = str(text)
     return text if len(text) <= width else text[: width - 1] + "…"
+
+
+# Display only: every level gets the same model, thinking and answers; it changes what Donut shows mid-turn.
+VERBOSITY = {
+    "quiet": ("Quiet", "show only each turn's final answer"),
+    "normal": ("Normal", "show the model's messages as it works (default)"),
+    "verbose": ("Verbose", "also show every tool call and a line on each result"),
+    "full": ("Full", "also show its thinking and each tool's output"),
+}
+
+
+def tool_summary(name, details):
+    """One short line naming what a tool call does: its command, file, URL or query."""
+    details = details if isinstance(details, dict) else {}
+    summary = approval_summary(details)
+    if not summary and isinstance(details.get("changes"), list) and details["changes"]:
+        first = details["changes"][0]
+        summary = first.get("path", "") if isinstance(first, dict) else ""
+        if len(details["changes"]) > 1:
+            summary += f" (+{len(details['changes']) - 1} more)"
+    if not summary and details.get("tool"):
+        summary = str(details.get("server", "")) + " · " + str(details["tool"])
+    return summary
 
 
 def approval_summary(details):
@@ -443,13 +553,16 @@ class Donut(App):
     Screen {{background: #101820;}}
     #transcript {{height: 1fr; padding: 0 1; background: #101820; scrollbar-size-vertical: 1;
                    scrollbar-background: #101820; scrollbar-color: {CORAL} 50%; scrollbar-color-hover: {ORANGE};}}
-    #response {{height: auto; max-height: 20; overflow-y: auto; padding: 0 1;}}
+    #response {{height: auto; max-height: 12; overflow-x: hidden; overflow-y: auto; scrollbar-size-vertical: 0;
+                 padding: 0 1;}}
     #thinking {{height: 1; padding: 0 2; display: none;}}
     #thinking.-busy {{display: block;}}
-    #usage {{height: 1; padding: 0 2;}}
+    #usage {{height: auto; max-height: 2; padding: 0 2;}}
+    #band {{height: auto; padding: 0 2;}}
     #draft {{height: auto; min-height: 3; max-height: 10; margin: 0 1; border: round {CORAL} 60%;
              background: #101820;}}
     #draft:focus {{border: round {ORANGE};}}
+    #draft.-shell {{border: round {TEAL};}}
     #status {{height: auto; max-height: 3; padding: 0 2;}}
     Footer {{background: #101820;}}
     Footer FooterKey .footer-key--key {{color: {ORANGE}; background: #101820; text-style: bold;}}
@@ -467,9 +580,11 @@ class Donut(App):
         Binding("shift+tab", "cycle_permission", "Permissions", priority=True),
     ]
 
-    def __init__(self, project, alias=None):
+    def __init__(self, project, alias=None, session=None):
         super().__init__()
         self.project = project
+        # Each window works from its own tickets folder, .donut/<session>/, made when it is first needed.
+        self.session_name = session or workspace.new_name(project)
         self.config = load()
         self.mode = "plan"  # plan, work, review or solo
         aliases = self.config.get("aliases", {})
@@ -503,10 +618,21 @@ class Donut(App):
         self.busy = False
         self.active = None
         self.child = None
-        self.turn_text = ""
+        self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
         self.last_answer = ""
         self.picking = None
-        self.queued = []
+        self.follow = True  # Keep the transcript at its end until the user scrolls up.
+        self.threads = {}  # "plan", "solo", "review" -> the session holding that conversation now
+        self.histories = {}  # the same -> [(speaker, text, model)], so a new model can take a conversation over
+        self.turn_tools = []
+        self.after_tools = False
+        level = self.config.get("verbosity")
+        self.verbosity = level if level in VERBOSITY else "normal"  # What the user sees, never what models do.
+        self.thinking_text = ""
+        self.message_start = 0  # Where the turn's latest message starts in turn_text, for quiet mode.
+        self.queued = []  # Messages typed during a turn, and background wake-ups waiting for the turn to end.
+        self.shell_runs = []  # (command, exit code, output) from !command, given to the model with the next message.
+        self.waiting = {}  # Background waits a model asked for: task -> command.
         self.always_allow = set()
         mode = self.config.get("permission_mode")
         self.permission = mode if mode in PERMISSION_MODES else "ask"
@@ -517,9 +643,10 @@ class Donut(App):
         self.detail = ""
         self.quotas = {}  # usage_key -> [{"window", "percent", "resets_at"}]; [] means no plan limits apply
         self.session_profiles = {}
+        self.ponytail_installed = {}  # usage_key -> whether Ponytail is installed for that login
 
     def compose(self):
-        yield RichLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
+        yield Transcript(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
         yield Static(id="response")
         yield Static(id="thinking")
         yield Menu(id="menu")
@@ -530,10 +657,15 @@ class Donut(App):
             placeholder=MODE_PLACEHOLDERS["plan"],
         )
         yield Static(id="status")
+        yield Static(id="band")
         yield Static(id="usage")
         yield Footer()
 
     def on_mount(self):
+        try:
+            conversations.remember_project(self.project)
+        except OSError:
+            pass
         self.welcome()
         self.status("Ready")
         if not self.config.get("aliases"):
@@ -561,7 +693,7 @@ class Donut(App):
             )
             try:
                 if session is None and connect:
-                    session = await self.session(alias, profile)
+                    session = await self.session(alias, profile, track=False)
                 if session is None:
                     continue
                 windows = await session.quota()
@@ -583,6 +715,11 @@ class Donut(App):
                 self.render_thinking()
             except NoMatches:
                 pass  # The timer can fire once more while the app shuts down.
+
+    @property
+    def lanes(self):
+        """This window's tickets folder: .donut/<session>/ (swim_lanes/ for an older project's tickets)."""
+        return workspace.lanes_dir(self.project, self.session_name)
 
     @property
     def role(self):
@@ -654,6 +791,7 @@ class Donut(App):
         title = Text("  DONUT", style=f"bold {ORANGE}")
         title.append("  /  " + release_version(), style=CORAL)
         title.append("   " + str(self.project), style=DIM)
+        title.append("   tickets " + workspace.relative(self.project, self.lanes), style=DIM)
         self.say(title)
         self.say(Text("  The planner writes the tickets. The worker takes them one at a time.", style=GRAY))
         hint = Text("  ")
@@ -663,6 +801,7 @@ class Donut(App):
             ("/review", "check"),
             ("/solo", "direct"),
             ("/", "commands"),
+            ("!", "shell"),
             ("Shift+Enter", "newline"),
         ):
             hint.append(key, style=f"bold {ORANGE}")
@@ -677,6 +816,7 @@ class Donut(App):
         try:
             self.render_thinking()
             self.render_usage()
+            self.render_band()
         except NoMatches:
             return
         # One entry per piece: the mode badge, every role and what it is set to (in every mode), then the
@@ -716,7 +856,12 @@ class Donut(App):
         permission.append("  (shift+tab)", style=DIM)
         if self.queued:
             permission.append(f"   {len(self.queued)} queued", style=CORAL)
+        if self.waiting:
+            permission.append(f"   ⏳ {len(self.waiting)} waiting", style=TEAL)
+        if self.verbosity != "normal":
+            permission.append(f"   {self.verbosity}", style=DIM)
         entries.append(permission)
+        entries.append(Text("tickets " + workspace.relative(self.project, self.lanes), style=DIM))
         widget = self.query_one("#status", Static)
         widget.update(pack_entries(entries, widget.content_size.width or self.size.width - 4))
 
@@ -743,11 +888,12 @@ class Donut(App):
         return groups
 
     def render_usage(self):
-        line = Text()
+        """One entry per account, wrapped onto a second line rather than cut off when the window is narrow."""
+        entries = []
         running = usage_key(self.running[2]) if self.busy and self.running else None
         for key, (label, _, _) in self.usage_groups().items():
-            if line:
-                line.append("   ")
+            line = Text()
+            entries.append(line)
             line.append(label, style=f"bold {ORANGE}" if key == running else GRAY)
             line.append(" ")
             if key[0] == "local":
@@ -776,10 +922,17 @@ class Donut(App):
                 line.append(f"{left}%", style=left_color(left))
                 if window["window"]:
                     line.append(" " + window["window"], style=DIM)
-        self.query_one("#usage", Static).update(line)
+        widget = self.query_one("#usage", Static)
+        widget.update(pack_entries(entries, widget.content_size.width or self.size.width - 4, gap="   "))
 
     def say(self, text, style=None):
-        self.query_one(RichLog).write(Text(text, style=style) if style and isinstance(text, str) else text)
+        # Lines measure as at most 80 columns on their own; expand them to the transcript's real width.
+        if isinstance(text, str):
+            text = Text(text, style=style or "")
+        if isinstance(text, Text):
+            text = link_text(text)
+        # While the user reads back, new lines are added without pulling the view down.
+        self.query_one(RichLog).write(text, expand=True, scroll_end=self.follow)
 
     async def choose(self, title, rows, kind="pick", details=None, subtitle=""):
         """Show rows in the inline menu and wait for a choice. Returns the chosen value, or None.
@@ -812,6 +965,10 @@ class Donut(App):
                 if isinstance(name, str) and "/" + name.lstrip("/") not in {row[0] for row in rows}:
                     description = command.get("description", "") if isinstance(command, dict) else ""
                     rows.append(("/" + name.lstrip("/"), "/" + name.lstrip("/"), (description or "")[:80]))
+        # Installed plugins and skills (Ponytail's /ponytail-review, …), listed before any session is open.
+        for command in plugins.commands(self.profiles.get(self.role, {}), self.project):
+            if command["name"] not in {row[0] for row in rows}:
+                rows.append((command["name"], command["name"], command["description"][:80]))
         return rows
 
     def on_menu_chosen(self, event):
@@ -832,19 +989,76 @@ class Donut(App):
         draft.clear()
         self.execute(command)
 
-    def event(self, kind, text, key=None):
+    def event(self, kind, text, key=None, source=None):
+        buffer = getattr(source, "wake_buffer", None)
+        if kind == "wake_start":
+            if self.busy:
+                source.wake_buffer = []  # Another turn is on screen; show this one when it ends.
+            else:
+                self.begin_wake(source)
+            return
+        if kind == "wake_end":
+            if buffer is not None:
+                source.wake_buffer = None
+                self.say(Text(f"  ⏰ {self.wake_title(source)} · woken by a background task", style=f"bold {TEAL}"))
+                self.say(markdown("".join(buffer).strip() or "(no reply)"))
+            elif source is not None and source is self.active:
+                self.finish_wake(source)
+            return
+        if kind == "background":
+            self.say(Text("  ⏰ " + str(text), style=TEAL))
+            return
+        if buffer is not None and kind == "text":
+            buffer.append(text)
+            return
+        if kind in ("tool", "tool_result", "break", "text"):
+            self.flush_thinking()
+        if kind == "break":
+            if self.turn_text.strip():
+                self.turn_text += "\n\n"
+                self.message_start = len(self.turn_text)
+            return
+        if kind == "thinking":
+            if self.verbosity == "full":
+                self.thinking_text += str(text)
+            return
+        if kind == "tool":
+            if isinstance(text, dict):
+                summary = tool_summary(text.get("name"), text.get("input"))
+                self.turn_tools.append(f"{text.get('name', 'Tool')} {summary}".strip()[:160])
+            if self.verbosity in ("verbose", "full") and isinstance(text, dict):
+                self.commit_paragraphs(final=True)
+                line = Text("  ⏺ " + str(text.get("name", "Tool")), style=f"bold {TEAL}")
+                summary = tool_summary(text.get("name"), text.get("input"))
+                if summary:
+                    line.append("  " + summary, style=GRAY)
+                self.say(line)
+                self.after_tools = True
+            return
+        if kind == "tool_result":
+            if self.verbosity in ("verbose", "full") and isinstance(text, dict):
+                self.show_tool_result(text)
+            return
         if kind == "text":
-            from rich.markdown import Markdown as RenderedMarkdown
-
             self.turn_text += text
             self.activity = "writing"
-            self.query_one("#response", Static).update(RenderedMarkdown(self.turn_text))
+            if self.verbosity != "quiet":
+                self.commit_paragraphs()
+            start = self.message_start if self.verbosity == "quiet" else self.shown
+            self.show_pending(self.turn_text[max(start, self.shown) :].strip())
         elif kind == "error":
             self.say("Error: " + str(text), CORAL)
         elif kind == "usage":
             if key is not None and isinstance(text, list):
                 self.quotas[key] = text
                 self.status()
+        elif kind in ("command", "command_output"):
+            task = getattr(self.active, "task", None)
+            if task is not None and isinstance(text, dict):
+                if kind == "command":
+                    task.command(text.get("id"), text.get("command", ""))
+                else:
+                    task.command_output(text.get("id"), text.get("output", ""))
         else:
             name = str(text)
             if name.startswith("mcp__"):
@@ -908,14 +1122,27 @@ class Donut(App):
         following = modes[(modes.index(self.permission) + 1) % len(modes)] if self.permission in modes else "ask"
         self.run_worker(self.set_permission(following), group="permission")
 
-    async def session(self, alias, profile, purpose=None, resume=None, conversation=None):
+    async def session(self, alias, profile, purpose=None, resume=None, conversation=None, track=True):
         """The persistent provider session for a model and purpose. Review-mode sessions are read-only.
 
         resume reopens a provider session or thread by its id (from /resume), replacing any open one.
+
+        Each purpose (plan, solo, review) is one conversation whatever model holds it. When its model changes,
+        the conversation carries over: in the same live session when the provider can switch models itself
+        (Claude, or Codex, on the same login), otherwise by handing the new model the conversation so far.
+        track=False is for sessions opened only to list models or read usage.
         """
+        thread = purpose or "plan"
         key = self.session_key(alias, profile, purpose)
         if conversation is not None and key in self.sessions:
             await self.sessions.pop(key).close()
+        previous = self.threads.get(thread) if track and conversation is None else None
+        if previous is not None and (previous not in self.sessions.values() or self.sessions.get(key) is previous):
+            previous = None
+        if previous is not None and key not in self.sessions:
+            switched = await self.switch_in_place(previous, alias, profile, key)
+            if switched:
+                return switched
         if key not in self.sessions:
             engine = profile.get("engine")
             cls = (
@@ -931,8 +1158,10 @@ class Donut(App):
                 raise ValueError(
                     "Persistent sessions for this engine are not implemented yet. Use /native for its full interactive client."
                 )
-            emit = lambda kind, data, key=usage_key(profile): self.event(kind, data, key)  # noqa: E731
+            holder = {}
+            emit = lambda kind, data, key=usage_key(profile): self.event(kind, data, key, holder.get("session"))  # noqa: E731
             session = cls(self.project, profile, emit, self.approve)
+            holder["session"] = session
             session.permission = self.permission
             session.read_only = purpose == "review"
             session.resume_id = resume
@@ -943,13 +1172,160 @@ class Donut(App):
                 if hasattr(session, "process"):
                     await session.close()
                 raise
+            session.task = ponytail.Task(self.project, engine, profile.get("model"))
             self.sessions[key] = session
             self.session_profiles[key] = profile
-        return self.sessions[key]
+        session = self.sessions[key]
+        if previous is not None and session is not previous:
+            # Another provider or login: give the new model the conversation so far, then retire the old one.
+            old_key = next(k for k, v in self.sessions.items() if v is previous)
+            old_name = model_name(self.session_profiles.get(old_key, {}), old_key[0].split("@")[0])
+            session.handoff = self.handoff_text(thread, old_name, model_name(profile, alias))
+            self.sessions.pop(old_key, None)
+            self.session_profiles.pop(old_key, None)
+            try:
+                await previous.close()
+            except Exception:
+                pass
+            if session.handoff:
+                self.say(Text(f"  {model_name(profile, alias)} continues the conversation from {old_name}.", style=DIM))
+        if track:
+            session.thread = thread
+            self.threads[thread] = session
+        return session
+
+    async def switch_in_place(self, session, alias, profile, key):
+        """Change the model of a live session on the same login, keeping the provider's own full context."""
+        old_key = next(k for k, v in self.sessions.items() if v is session)
+        old_profile = self.session_profiles.get(old_key, {})
+        if usage_key(old_profile) != usage_key(profile) or profile.get("engine") not in ("claude", "codex"):
+            return None
+        if not hasattr(session, "switch_model"):
+            return None
+        try:
+            await session.switch_model(profile.get("model"))
+        except Exception as error:
+            self.say(f"  Could not switch models in place ({error}); handing the conversation over instead.", DIM)
+            return None
+        self.sessions.pop(old_key)
+        self.session_profiles.pop(old_key, None)
+        self.sessions[key], self.session_profiles[key] = session, profile
+        session.profile = dict(profile)
+        self.say(
+            Text(
+                f"  {model_name(profile, alias)} continues the same conversation "
+                f"(was {model_name(old_profile, old_key[0].split('@')[0])}).",
+                style=DIM,
+            )
+        )
+        return session
+
+    def remember_exchange(self, session, text):
+        """Keep each conversation's exchanges, whatever model answers, so another model can pick them up."""
+        thread = getattr(session, "thread", None)
+        if thread is None:
+            return
+        tools = "; ".join(self.turn_tools[:30])
+        history = self.histories.setdefault(thread, [])
+        history.append(("you", text, ""))
+        answer = self.turn_text.strip() + (f"\n(Tools used: {tools})" if tools else "")
+        history.append(("model", answer, self.running_name()))
+
+    def running_name(self):
+        if not self.running:
+            return ""
+        role, alias, profile = self.running
+        return model_name(profile, alias)
+
+    def handoff_text(self, thread, old_name, new_name, limit=100_000):
+        """The conversation so far, oldest first, for a model taking it over from another provider."""
+        history = self.histories.get(thread) or []
+        if not history:
+            return ""
+        lines, size = [], 0
+        for speaker, text, name in reversed(history):
+            line = ("User: " if speaker == "you" else f"Assistant ({name or old_name}): ") + text
+            if size + len(line) > limit:
+                lines.append("(earlier messages left out for length)")
+                break
+            lines.append(line)
+            size += len(line)
+        body = "\n\n".join(reversed(lines))
+        return (
+            f"(Donut: you are {new_name}, taking over this conversation from {old_name}. The conversation so far "
+            "is below, oldest first. Treat it as your own history and continue from it; the project on disk "
+            "reflects the work already done.)\n<conversation>\n" + body + "\n</conversation>\n\n"
+        )
+
+    def has_ponytail(self, profile):
+        """Whether Ponytail is installed and enabled for this login; checked once per login per Donut run."""
+        key = usage_key(profile)
+        if key not in self.ponytail_installed:
+            self.ponytail_installed[key] = plugins.installed(profile, "ponytail", self.project)
+        return self.ponytail_installed[key]
+
+    async def ask(self, text, prompt=None):
+        """Send one turn to the active session, then book it on the conversation's Ponytail task row."""
+        session = self.active
+        started = time.monotonic()
+        prompt = prompt if prompt is not None else text
+        if self.shell_runs:
+            prompt = background.shell_note(self.shell_runs) + prompt
+            self.shell_runs = []
+        handoff = getattr(session, "handoff", "")
+        if handoff:
+            prompt = handoff + prompt
+            session.handoff = ""
+        waits = isinstance(session, (CodexSession, QwenSession))
+        if waits and not getattr(session, "told_wait", False):
+            # Claude Code wakes itself when a background shell ends; the others learn Donut's DONUT-WAIT line.
+            prompt += background.WAIT_NOTE
+            session.told_wait = True
+        await session.query(prompt)
+        self.remember_exchange(session, text)
+        if waits or getattr(session, "donut_waits", False):
+            command = background.wait_request(self.turn_text)
+            if command:
+                await self.start_wait(session, command)
+        task = getattr(session, "task", None)
+        profile = self.session_profiles.get(next((k for k, v in self.sessions.items() if v is session), None), {})
+        if task is None or not self.has_ponytail(profile):
+            return
+        task.turn(text, time.monotonic() - started, getattr(session, "usage", None))
+        task.level = ponytail.level(profile, self.project) if profile.get("engine") == "claude" else task.level
+        try:
+            ponytail.record(task)
+        except OSError as error:
+            self.say(f"Ponytail ledger not written: {error}", DIM)
+        self.render_band()
+
+    def render_band(self):
+        """Ponytail's band for the current mode's conversation, when Ponytail is installed for its login."""
+        widget = self.query_one("#band", Static)
+        profile = self.profiles.get(self.role, {})
+        if not profile or self.config.get("ponytail_band") is False or not self.has_ponytail(profile):
+            widget.display = False
+            return
+        session = self.sessions.get(self.session_key(self.selected[self.role], profile, self.purpose))
+        task = getattr(session, "task", None)
+        if task is None:
+            task = ponytail.Task(self.project, profile.get("engine"), profile.get("model"))
+        if profile.get("engine") == "claude":
+            task.level = ponytail.level(profile, self.project)
+        line = Text()
+        for index, (label, value) in enumerate(task.band()):
+            if index:
+                line.append("  ·  ", style=DIM)
+            line.append(label + " ", style=f"bold {ORANGE}" if index == 0 else DIM)
+            tone = CORAL if value.endswith("failed") else TEAL if value.endswith("passed") else GRAY
+            line.append(value, style=tone if label == "tests" else f"bold {GRAY}" if index == 0 else GRAY)
+        widget.display = True
+        widget.update(line)
 
     def on_text_area_changed(self, event):
         menu = self.query_one(Menu)
         text = event.text_area.text
+        event.text_area.set_class(text.startswith("!"), "-shell")
         if menu.kind == "pick":
             menu.filter(text)
         elif menu.kind == "approve":
@@ -990,21 +1366,83 @@ class Donut(App):
         if not self.busy:
             self.execute("/" + {"plan": "work", "work": "review", "review": "solo", "solo": "plan"}[self.mode])
 
+    async def start_fresh(self):
+        """/clear and /new: close every provider conversation and wipe the screen, as if Donut had just opened.
+
+        Tickets, model choices and the mode are kept; nothing from the earlier conversation is carried over.
+        """
+        sessions, self.sessions = list(self.sessions.values()), {}
+        self.threads, self.histories = {}, {}
+        self.ponytail_installed = {}
+        for session in sessions:
+            await session.close()
+        self.last_answer = ""
+        self.query_one(RichLog).clear()
+        self.welcome()
+        self.say(Text("  New conversation. Existing tickets are kept.", style=GRAY))
+
+    def on_click(self, event):
+        """Open a link under the mouse. Terminals also open these hyperlinks with Cmd- or Ctrl-click."""
+        try:
+            style = self.screen.get_style_at(event.screen_x, event.screen_y)
+        except Exception:
+            return
+        if style.link:
+            self.open_url(style.link)
+
     def action_clear(self):
         self.query_one(RichLog).clear()
 
+    def copy_text(self, text):
+        """Copy to the clipboard through the terminal (OSC 52) and this computer's own clipboard tool."""
+        if not text:
+            return False
+        self.copy_to_clipboard(text)
+        copy_native(text)
+        return True
+
+    def selected_text(self):
+        """Text selected in the transcript or the prompt, if any."""
+        try:
+            text = self.screen.get_selected_text()
+        except Exception:
+            text = None
+        if text:
+            return text
+        try:
+            return self.query_one(Draft).selected_text or None
+        except NoMatches:
+            return None
+
+    def on_text_selected(self, event):
+        """Copy a mouse selection as soon as it is made, like a terminal's copy on select."""
+        text = self.selected_text()
+        if text and self.copy_text(text):
+            self.notify(f"Copied {len(text)} characters", timeout=2)
+
     async def action_cancel(self):
+        selected = self.selected_text()
+        if selected:
+            # Ctrl+C with something selected copies it, as in any editor; with nothing selected it cancels.
+            self.copy_text(selected)
+            self.notify(f"Copied {len(selected)} characters", timeout=2)
+            try:
+                self.screen.clear_selection()
+            except Exception:
+                pass
+            return
         menu = self.query_one(Menu)
         if self.picking and not self.picking.done():
             self.picking.set_result(None)
         elif menu.is_open:
             menu.close()
-        if self.queued:
-            # Put queued messages back in the prompt so nothing typed is lost.
+        typed = [item for item in self.queued if isinstance(item, str)]
+        if typed:
+            # Put queued messages back in the prompt so nothing typed is lost; background wake-ups stay queued.
             draft = self.query_one(Draft)
-            draft.load_text("\n".join(self.queued + ([draft.text] if draft.text.strip() else [])))
+            draft.load_text("\n".join(typed + ([draft.text] if draft.text.strip() else [])))
             draft.move_cursor(draft.document.end)
-            self.queued.clear()
+            self.queued = [item for item in self.queued if not isinstance(item, str)]
         if self.active:
             await self.active.interrupt()
         if self.child and self.child.returncode is None:
@@ -1024,6 +1462,30 @@ class Donut(App):
 
     @work(exclusive=True)
     async def execute(self, text):
+        if isinstance(text, background.Wake):
+            self.busy, self.running, self.started = True, None, time.monotonic()
+            try:
+                await self.wake_turn(text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self.say("Error: " + str(error), CORAL)
+            finally:
+                self.turn_finished()
+            return
+        if text.startswith("!"):
+            self.busy, self.running, self.started = True, None, time.monotonic()
+            self.status()
+            try:
+                await self.shell(text[1:].strip())
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self.say("Error: " + str(error), CORAL)
+            finally:
+                self.child = None
+                self.turn_finished()
+            return
         if not self.selected[self.role] and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto")):
             self.say("Run donut setup to configure an account first.")
             return
@@ -1050,18 +1512,7 @@ class Donut(App):
         except Exception as error:
             self.say("Error: " + str(error), CORAL)
         finally:
-            self.active = None
-            self.busy = False
-            self.running = None
-            if self.AUTO_REFRESH_QUOTAS:
-                self.refresh_quotas_soon()
-            try:
-                self.status("Ready")
-                self.query_one(Draft).focus()
-            except NoMatches:
-                return  # The app is shutting down.
-            if self.queued:
-                self.call_after_refresh(self.execute, self.queued.pop(0))
+            self.turn_finished()
 
     async def command(self, text):
         words = shlex.split(text)
@@ -1125,6 +1576,12 @@ class Donut(App):
                     await self.work_tickets(choice)
                 # Back to planning, so the next message is a follow-up rather than refused.
                 self.set_mode("plan")
+        elif name == "/session":
+            await self.choose_session(args[0] if args else None)
+        elif name == "/project":
+            # The path exactly as typed: shell-style splitting would eat a Windows path's backslashes.
+            path = text.strip()[len(name) :].strip().strip("\"'")
+            await self.open_project(path or None)
         elif name == "/resume":
             await self.resume_conversation(args[0] if args else None)
         elif name == "/model":
@@ -1141,6 +1598,18 @@ class Donut(App):
                 chosen = await self.choose(f"Permission mode · now {current}", rows)
             if chosen:
                 await self.set_permission(chosen)
+        elif name == "/verbosity":
+            if args and args[0] in VERBOSITY:
+                chosen = args[0]
+            else:
+                rows = [(label, level, description) for level, (label, description) in VERBOSITY.items()]
+                chosen = await self.choose(
+                    f"What Donut shows while models work · now {VERBOSITY[self.verbosity][0]}",
+                    rows,
+                    subtitle="Display only: models think, work and answer exactly the same at every level",
+                )
+            if chosen:
+                await self.set_verbosity(chosen)
         elif name == "/auto":
             if self.permission == "auto":
                 fallback = self.previous_permission if self.previous_permission != "auto" else "ask"
@@ -1149,19 +1618,31 @@ class Donut(App):
                 await self.set_permission("auto")
         elif name == "/usage":
             await self.usage()
-        elif name == "/clear":
-            session = self.sessions.pop(
-                self.session_key(self.selected[self.role], self.profiles[self.role], self.purpose), None
+        elif name in ("/clear", "/new"):
+            await self.start_fresh()
+        elif name == "/ponytail" and args[:1] == ["band"]:
+            # Ponytail's band is a Claude Code UI module; in Donut the same switch shows or hides Donut's band.
+            if args[1:2] == ["import"]:
+                self.say("  /ponytail band import reads Claude Code's own session files; run it there (/native).", DIM)
+                return
+            shown = {"on": True, "off": False}.get(
+                args[1] if len(args) > 1 else "", self.config.get("ponytail_band") is False
             )
-            if session:
-                await session.close()
-            self.say("New conversation. Existing tickets are preserved.")
+            try:
+                config = load()
+                config["ponytail_band"] = shown
+                save(config)
+            except (ValueError, OSError) as error:
+                self.say(f"Band setting applies to this session only: {error}", DIM)
+            self.config["ponytail_band"] = shown
+            self.say(f"  Ponytail band {'shown' if shown else 'hidden'}. /ponytail band switches it back.", DIM)
+            self.status()
         elif name == "/copy":
-            self.copy_to_clipboard(self.last_answer)
+            self.copy_text(self.last_answer)
             self.notify("Copied last response (terminal clipboard support required).")
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nShift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Provider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /native · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -1224,24 +1705,109 @@ class Donut(App):
         else:
             self.active = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
             self.start_turn(self.role)
-            self.turn_text = ""
-            await self.active.query(text)
+            self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
+            await self.ask(text, plugins.translate(text, plugins.commands(self.profiles[self.role], self.project)))
             self.answer()
 
-    def answer(self):
-        self.query_one("#response", Static).update("")
-        self.last_answer = self.turn_text
-        from rich.markdown import Markdown as RenderedMarkdown
+    def show_pending(self, pending):
+        """The part of the answer still being written, above the prompt; the transcript stays at its end."""
+        log = self.query_one(RichLog)
+        response = self.query_one("#response", Static)
+        response.update(markdown(pending) if pending else "")
 
-        self.say(RenderedMarkdown(self.turn_text))
+        def settle():
+            response.scroll_end(animate=False)  # A long paragraph shows its newest lines.
+            if self.follow:
+                log.scroll_end(animate=False)  # The reply area grew, so the transcript's last lines moved up.
+
+        self.call_after_refresh(settle)
+
+    def flush_thinking(self):
+        """Write buffered thinking (Full verbosity) as one dim block before what comes next."""
+        if not self.thinking_text.strip():
+            self.thinking_text = ""
+            return
+        text = " ".join(self.thinking_text.split())
+        self.thinking_text = ""
+        self.commit_paragraphs(final=True)
+        self.say(Text("  ✻ " + text, style=f"italic {DIM}"))
+
+    def show_tool_result(self, result):
+        output = str(result.get("output") or "").rstrip()
+        rows = output.splitlines()
+        if self.verbosity == "full" and rows:
+            for index, row in enumerate(rows[:20]):
+                self.say(Text("    ⎿ " if index == 0 else "      ", style=DIM) + Text(_clip(row), style=GRAY))
+            if len(rows) > 20:
+                self.say(Text(f"      … {len(rows) - 20} more lines", style=DIM))
+            return
+        mark = Text("    ⎿ ", style=CORAL if result.get("error") else DIM)
+        if result.get("error"):
+            mark.append(_clip(rows[0] if rows else "failed", 120), style=CORAL)
+        else:
+            mark.append(f"{len(rows)} line{'' if len(rows) == 1 else 's'}" if rows else "done", style=DIM)
+        self.say(mark)
+
+    async def set_verbosity(self, level):
+        self.verbosity = level
+        try:
+            config = load()
+            config["verbosity"] = level
+            save(config)
+            self.config["verbosity"] = level
+        except (ValueError, OSError) as error:
+            self.say(f"Verbosity applies to this session only: {error}", DIM)
+        label, description = VERBOSITY[level]
+        self.say(Text(f"  Verbosity · {label}", style=f"bold {ORANGE}") + Text(f"  {description}", style=DIM))
+        self.say("  This changes only what Donut shows; the models still think and answer in full.", DIM)
+        self.status()
+
+    def commit_paragraphs(self, final=False):
+        """Move finished paragraphs of the streaming answer into the transcript, like Claude Code.
+
+        Only the paragraph still being written stays above the prompt, so a long turn of progress updates scrolls
+        by in the transcript instead of piling up in one block. A paragraph ends at a blank line outside a code
+        block; final=True also writes the rest.
+        """
+        pending = self.turn_text[self.shown :]
+        cut = len(pending) if final else -1
+        if not final:
+            search = len(pending)
+            while True:
+                cut = pending.rfind("\n\n", 0, search)
+                if cut == -1 or (self.turn_text[: self.shown] + pending[:cut]).count("```") % 2 == 0:
+                    break
+                search = cut
+        if cut <= 0:
+            return
+        chunk = pending[:cut].strip()
+        first = not self.turn_text[: self.shown].strip()
+        self.shown += cut
+        if chunk:
+            if first or self.after_tools:
+                self.say(Text(""))  # A blank line after the request, or after a run of tool calls.
+            self.after_tools = False
+            self.say(markdown(chunk))
+            self.say(Text(""))
+
+    def answer(self):
+        self.flush_thinking()
+        if self.verbosity == "quiet" and self.shown < self.message_start:
+            self.shown = self.message_start  # Quiet: earlier messages of the turn are not shown, only the last.
+        self.commit_paragraphs(final=True)
+        self.query_one("#response", Static).update("")
+        if self.follow:
+            log = self.query_one(RichLog)
+            self.call_after_refresh(lambda: log.scroll_end(animate=False))
+        self.last_answer = self.turn_text
 
     async def solo(self, text):
         """Send the message to the soloist as is, in its own conversation, the way Claude Code would."""
         self.active = await self.session(self.selected["solo"], self.profiles["solo"], "solo")
         self.start_turn("solo")
         self.say(Text("> " + text, style=f"bold {TEAL}"))
-        self.turn_text = ""
-        await self.active.query(text)
+        self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
+        await self.ask(text)
         self.answer()
         self.log_turn("solo", "solo", text)
 
@@ -1250,8 +1816,8 @@ class Donut(App):
         self.active = await self.session(self.selected["review"], self.profiles["review"], "review")
         self.start_turn("review", "", "reviewing")
         self.say(Text("> " + text, style=f"bold {ORANGE}"))
-        self.turn_text = ""
-        await self.active.query(REVIEW_MODE_PROMPT + text)
+        self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
+        await self.ask(text, REVIEW_MODE_PROMPT + text)
         self.answer()
         self.log_turn("review", "review", text)
 
@@ -1271,9 +1837,181 @@ class Donut(App):
                 getattr(session, "provider_id", None),
                 text,
                 self.turn_text,
+                session=self.session_name,
             )
         except OSError as error:
             self.say(f"Conversation not saved for /resume: {error}", DIM)
+
+    def role_of(self, session):
+        for key, value in self.sessions.items():
+            if value is session:
+                purpose = key[0].rpartition("@")[2] if "@" in key[0] else ""
+                return purpose if purpose in ("solo", "review") else "plan"
+        return self.role
+
+    def wake_title(self, session):
+        role = self.role_of(session)
+        return f"{model_name(self.profiles.get(role, {}), self.selected.get(role))} ({ROLE_TITLES.get(role, role)})"
+
+    def begin_wake(self, session):
+        """Claude Code started a turn on its own (a background shell it left running finished): show it."""
+        role = self.role_of(session)
+        self.busy, self.active = True, session
+        self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
+        self.say(Text(f"  ⏰ {self.wake_title(session)} · woken by a background task", style=f"bold {TEAL}"))
+        self.start_turn(role, "", "continuing")
+
+    def finish_wake(self, session):
+        role = self.role_of(session)
+        self.answer()
+        self.log_turn(role if role in ("solo", "review") else "plan", role, "(woken by a background task)")
+        self.turn_finished()
+
+    def turn_finished(self):
+        """Back to Ready after a turn, then run the next queued message or wake-up."""
+        self.active = None
+        self.busy = False
+        self.running = None
+        if self.AUTO_REFRESH_QUOTAS:
+            self.refresh_quotas_soon()
+        try:
+            self.status("Ready")
+            self.query_one(Draft).focus()
+        except NoMatches:
+            return  # The app is shutting down.
+        if self.queued:
+            self.call_after_refresh(self.execute, self.queued.pop(0))
+
+    async def start_wait(self, session, command):
+        """A model asked Donut to wake it when command exits. Ask first unless permissions are on Full access."""
+        if self.permission != "full":
+            decision = await self.approve("Bash", {"command": command, "description": "wait in the background"})
+            if decision == "no":
+                self.say("  Not waiting; the model was not told. Ask it to continue when you are ready.", DIM)
+                return
+        role = self.role_of(session)
+        task = asyncio.create_task(self.wait_then_wake(session, role, command))
+        self.waiting[task] = command
+        task.add_done_callback(lambda done: (self.waiting.pop(done, None), self.status()))
+        self.say(Text(f"  ⏳ Waiting on `{command}` · {self.wake_title(session)} continues when it exits", style=TEAL))
+        self.status()
+
+    async def wait_then_wake(self, session, role, command):
+        try:
+            code, output = await background.wait_for(command, self.project)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            code, output = -1, f"Could not run it: {error}"
+        wake = background.Wake(session, role, command, code, output, time.time())
+        if self.busy:
+            self.queued.append(wake)
+            self.status()
+        else:
+            self.execute(wake)
+
+    async def wake_turn(self, wake):
+        """Give the model the result of the command it waited on, in its own conversation."""
+        state = "timed out" if wake.code is None else f"exit {wake.code}"
+        if wake.session not in self.sessions.values():
+            self.say(Text(f"  ⏰ `{wake.command}` finished ({state}), but its conversation was closed.", style=TEAL))
+            self.say(Text(background.tail(wake.output, 1500), style=DIM))
+            return
+        self.active = wake.session
+        self.say(
+            Text(
+                f"  ⏰ `{wake.command}` finished ({state}) · waking {self.wake_title(wake.session)}",
+                style=f"bold {TEAL}",
+            )
+        )
+        self.start_turn(wake.role, "", "continuing")
+        self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
+        await self.ask(f"(background) {wake.command}", wake.prompt)
+        self.answer()
+        self.log_turn(
+            wake.role if wake.role in ("solo", "review") else "plan", wake.role, f"(background) {wake.command}"
+        )
+
+    async def shell(self, command):
+        """!command: run it in the project and show its output; the model gets it with the next message."""
+        if not command:
+            self.say("  Type ! then a shell command, for example: !git status", DIM)
+            return
+        self.say(Text("! " + command, style=f"bold {TEAL}"))
+        self.activity, self.detail = "running", command
+        self.child = await background.start(command, self.project)
+        lines = []
+        async for raw in self.child.stdout:
+            line = ANSI_ESCAPE.sub("", raw.decode("utf-8", errors="replace").rstrip("\r\n")).split("\r")[-1]
+            lines.append(line)
+            if len(lines) <= 2000:
+                self.say(Text("  " + line, style=GRAY))
+        code = await self.child.wait()
+        self.child = None
+        if len(lines) > 2000:
+            self.say(Text(f"  … {len(lines) - 2000} more lines (the model gets the end of the output)", style=DIM))
+        self.say(Text(f"  exit {code}", style=TEAL if code == 0 else CORAL))
+        self.shell_runs.append((command, code, "\n".join(lines)))
+
+    async def choose_session(self, name=None):
+        """Point this window at another tickets folder: an existing session, a new one, or older swim_lanes/."""
+        if name is None:
+            rows = [("New session", "", "start an empty tickets folder")]
+            for session in workspace.sessions(self.project):
+                counts = workspace.count(self.project, session)
+                summary = " · ".join(
+                    f"{counts[lane]} {lane.replace('_', ' ')}"
+                    for lane in ("to_do", "in_progress", "done", "blocked")
+                    if counts[lane]
+                )
+                current = "current · " if session == self.session_name else ""
+                rows.append((session, session, current + (summary or "no tickets yet")))
+            if (workspace.lanes_dir(self.project) / "to_do").is_dir():
+                rows.append(("swim_lanes/", "-", "this project's tickets from before sessions"))
+            name = await self.choose(f"Tickets session · now {workspace.relative(self.project, self.lanes)}", rows)
+            if name is None:
+                return
+        if name in ("", "new"):
+            name = workspace.new_name(self.project, taken={self.session_name})
+        elif name in ("-", "swim_lanes", "swim_lanes/"):
+            name = None
+        elif not workspace.valid(name):
+            raise ValueError(f"Invalid session name {name!r}: use letters, numbers, '.', '_' or '-'")
+        self.session_name = name
+        await asyncio.to_thread(workspace.create, self.project, name)
+        folder = workspace.relative(self.project, self.lanes)
+        self.say(Text(f"  Tickets session · {folder}", style=f"bold {ORANGE}"))
+        self.say("  /plan writes tickets here and /work runs them from here.", DIM)
+        self.status()
+
+    async def open_project(self, path=None):
+        """Open another project in a new terminal window, picked from the projects Donut has opened."""
+        if path is None:
+            current = str(Path(self.project).resolve())
+            rows = []
+            for project in conversations.recent_projects():
+                if project == current:
+                    continue
+                sessions = workspace.sessions(project)
+                detail = (
+                    f"{len(sessions)} session{'' if len(sessions) == 1 else 's'}" if sessions else "no sessions yet"
+                )
+                rows.append((Path(project).name or project, project, f"{project} · {detail}"))
+            if not rows:
+                self.say("  No other projects yet. Use /project PATH to open one.", DIM)
+                return
+            path = await self.choose("Open a project in a new window", rows)
+            if not path:
+                return
+        project = Path(path).expanduser().resolve()
+        if not project.is_dir():
+            raise ValueError(f"No such folder: {project}")
+        where = await asyncio.to_thread(open_window, project)
+        if where:
+            self.say(Text(f"  Opened {project.name or project} in {where}.", style=f"bold {ORANGE}"))
+        else:
+            self.say("  No terminal app found to open a window with. Run this in a new terminal:", CORAL)
+            self.say("  " + shlex.join(window_command(project)), GRAY)
 
     async def resume_conversation(self, record_id=None):
         """Reopen an earlier conversation: switch to its mode and model, then continue the provider's session."""
@@ -1317,12 +2055,20 @@ class Donut(App):
             pass
         self.sync_reviewer()
         self.set_mode(mode)
+        if record.get("session") and workspace.valid(record["session"]):
+            self.session_name = record["session"]
         purpose = mode if mode in ("solo", "review") else None
         self.status("resuming")
         await self.session(alias, profile, purpose, resume=record.get("provider_id"), conversation=record["id"])
+        # The saved recap seeds this conversation's history, so a later switch to another provider has context.
+        self.histories[purpose or "plan"] = [
+            ("you" if message.get("from") == "you" else "model", message.get("text", ""), record.get("model", ""))
+            for message in record.get("messages", [])
+        ]
         line = Text("  Resumed", style=f"bold {ORANGE}")
         line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
         line.append(f" · {record.get('title', '')}", style=GRAY)
+        line.append(f" · tickets {workspace.relative(self.project, self.lanes)}", style=DIM)
         self.say(line)
         if not record.get("provider_id"):
             self.say("  The provider kept no session for it, so this continues in a fresh one.", DIM)
@@ -1349,20 +2095,23 @@ class Donut(App):
 
     async def plan(self, text):
         # Install outside the display stream; existing project instructions are preserved.
-        await asyncio.to_thread(install, self.project, Path.home(), quiet=True)
-        before = ticket_snapshot(self.project)
+        await asyncio.to_thread(install, self.project, Path.home(), quiet=True, session=self.session_name)
+        before = ticket_snapshot(self.project, self.lanes)
+        folder = workspace.relative(self.project, self.lanes)
         self.active = await self.session(self.selected["plan"], self.profiles["plan"])
         self.start_turn("plan")
         prompt = (
-            "Read skills/donut-planner/SKILL.md. Plan only: research and write scoped tickets; do not implement or commit. Respect on_hold and blocked lanes and reserve their identities. Give a brief overview when finished; Donut lists created tickets. User request:\n"
-            + text
+            "Read skills/donut-planner/SKILL.md. Plan only: research and write scoped tickets; do not implement or commit. "
+            f"This session's tickets live in {folder}: write new tickets in {folder}to_do/ and leave every other "
+            "tickets folder alone. Respect on_hold and blocked lanes and reserve their identities. Give a brief overview "
+            "when finished; Donut lists created tickets. User request:\n" + text
         )
         self.say(Text("> " + text, style=f"bold {ORANGE}"))
-        self.turn_text = ""
-        await self.active.query(prompt)
+        self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
+        await self.ask(text, prompt)
         self.answer()
         self.log_turn("plan", "plan", text)
-        created = [path for key, path in ticket_snapshot(self.project).items() if key not in before]
+        created = [path for key, path in ticket_snapshot(self.project, self.lanes).items() if key not in before]
         self.say("Tickets created: " + str(len(created)), CORAL)
         for path in sorted(created):
             self.say("  " + path.relative_to(self.project).as_posix(), GRAY)
@@ -1440,7 +2189,7 @@ class Donut(App):
             self.status("discovering models for " + alias)
             try:
                 if profile["engine"] in ("claude", "codex"):
-                    session = await self.session(alias, profile)
+                    session = await self.session(alias, profile, track=False)
                     models = await session.models()
                 elif profile["engine"] == "ollama":
                     proc = await asyncio.create_subprocess_exec("ollama", "list", stdout=asyncio.subprocess.PIPE)
@@ -1503,6 +2252,7 @@ class Donut(App):
         alias = self.selected["work"]
         if not alias:
             raise ValueError("Run donut setup to configure a worker.")
+        await asyncio.to_thread(install, self.project, Path.home(), quiet=True, session=self.session_name)
         with tempfile.TemporaryDirectory(prefix="donut-worker-") as temp:
             config = copy.deepcopy(self.config)
             config["aliases"][alias] = dict(self.profiles["work"], permission_mode=self.permission)
@@ -1521,7 +2271,9 @@ class Donut(App):
             path = folder / "config.json"
             path.write_text(json.dumps(config))
             path.chmod(0o600)
-            env = dict(os.environ, XDG_CONFIG_HOME=temp, PYTHONIOENCODING="utf-8", NO_COLOR="1")
+            env = dict(
+                os.environ, XDG_CONFIG_HOME=temp, PYTHONIOENCODING="utf-8", NO_COLOR="1", DONUT_VERBOSITY=self.verbosity
+            )
             self.child = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
@@ -1530,6 +2282,7 @@ class Donut(App):
                 str(self.project),
                 "-m",
                 alias,
+                *(["--session", self.session_name] if self.session_name else []),
                 "--work",
                 *words,
                 env=env,
@@ -1593,7 +2346,7 @@ class Donut(App):
         self.say(f"Returned from native {executable} (exit {code}).")
 
 
-def run_terminal(project, alias=None):
+def run_terminal(project, alias=None, session=None):
     if not sys.stdin.isatty():
         raise ValueError("Interactive Donut requires a terminal. Use --plan REQUEST or --work next COUNT in scripts.")
-    Donut(project, alias).run()
+    Donut(project, alias, session).run()

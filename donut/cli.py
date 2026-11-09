@@ -12,15 +12,19 @@ from .runner import run_agent, run_batch
 from .planner_output import ticket_snapshot, show_created_tickets
 from .setup import setup, discover
 from .ui import banner, welcome, release_version, paint
+from . import workspace
 
 
-def plan_session(profile, alias, project, request=None):
-    install(project, Path.home())
+def plan_session(profile, alias, project, request=None, session=None):
+    install(project, Path.home(), session=session)
+    lanes = workspace.lanes_dir(project, session)
+    folder = workspace.relative(project, lanes)
     state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut"
     state.mkdir(parents=True, exist_ok=True)
     run = Path(tempfile.mkdtemp(prefix="plan-", dir=state))
     print(
-        f"Planner: {alias} ({profile.get('model') or profile['engine'] + ' default'})\nProject: {project}\nLogs: {run}"
+        f"Planner: {alias} ({profile.get('model') or profile['engine'] + ' default'})\nProject: {project}\n"
+        f"Tickets: {folder}\nLogs: {run}"
     )
     interactive = request is None
     if interactive:
@@ -39,10 +43,11 @@ def plan_session(profile, alias, project, request=None):
         prompt = (
             "Planning only: read skills/donut-planner/SKILL.md and project instructions. "
             "This explicit planner assignment overrides worker-only prohibitions on creating tickets. "
-            "Research the request and write scoped tickets in swim_lanes/to_do/. Inspect existing tickets "
-            "before adding or updating them; preserve work already in progress or done. Inspect swim_lanes/on_hold/ "
+            f"This session's tickets live in {folder}; leave every other tickets folder alone. "
+            f"Research the request and write scoped tickets in {folder}to_do/. Inspect existing tickets "
+            f"before adding or updating them; preserve work already in progress or done. Inspect {folder}on_hold/ "
             "to reserve held ticket numbers and avoid duplicates. Keep held specifications consistent, but "
-            "release them only on an explicit user request. Inspect swim_lanes/blocked/ too: reserve its numbers, "
+            f"release them only on an explicit user request. Inspect {folder}blocked/ too: reserve its numbers, "
             "investigate blockers, but requeue only when the user requests retry and the blocker is addressed. "
             "Never queue work depending on held or blocked tickets. Do not implement, "
             "commit or push. Your final response must be at most two short sentences describing what you did, "
@@ -54,7 +59,7 @@ def plan_session(profile, alias, project, request=None):
         )
         if history:
             prompt += f"\nPrevious planner output (consult for follow-up context): {run / f'{len(history):03}.log'}"
-        before = ticket_snapshot(project)
+        before = ticket_snapshot(project, lanes)
         activate(profile)
         try:
             code = run_agent(profile, project, prompt, run / f"{len(history) + 1:03}.log", planner=True)
@@ -65,9 +70,9 @@ def plan_session(profile, alias, project, request=None):
             print(paint("PLANNING FAILED\nCheck the output and logs before running workers.", "coral"))
             return code
         history.append(request)
-        show_created_tickets(project, before)
+        show_created_tickets(project, before, lanes)
         print(paint("\nPLANNING COMPLETE", "teal"))
-        print("Try exiting the shell and running `donut --work next 1`")
+        print("Try exiting the shell and running `donut --work next 1" + (f" --session {session}`" if session else "`"))
         if not interactive:
             return 0
 
@@ -77,6 +82,12 @@ def main():
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("-m", "--model", default=argparse.SUPPRESS, help="configured model alias")
     shared.add_argument("-p", "--project", default=argparse.SUPPRESS, help="project path (default: current directory)")
+    shared.add_argument(
+        "-s",
+        "--session",
+        default=argparse.SUPPRESS,
+        help="tickets folder .donut/SESSION/ (default: the latest session, else swim_lanes/, else a new session)",
+    )
     parser = argparse.ArgumentParser(
         prog="donut",
         parents=[shared],
@@ -129,7 +140,7 @@ def main():
     scan = sub.add_parser("discover", parents=[shared], help="find Ollama models and GGUF/Safetensors files")
     scan.add_argument("--scan", help="directory to scan instead of common model folders")
     for name in ("init", "add-skills"):
-        sub.add_parser(name, parents=[shared], help="install planner/worker skills and swim lanes")
+        sub.add_parser(name, parents=[shared], help="install planner/worker skills and a session's ticket lanes")
     work = sub.add_parser("do", parents=[shared], help="compatibility form of --work COUNT")
     work.add_argument("next", choices=["next"])
     work.add_argument("count", help="positive number or all")
@@ -161,17 +172,20 @@ def main():
     try:
         if not project.is_dir():
             raise ValueError(f"Project directory does not exist: {project}")
+        session = getattr(args, "session", None)
+        if session is not None and not workspace.valid(session):
+            raise ValueError(f"Invalid session name {session!r}: use letters, numbers, '.', '_' or '-'")
         if args.action == "terminal":
             from .terminal import run_terminal
 
-            run_terminal(project, getattr(args, "model", None))
+            run_terminal(project, getattr(args, "model", None), session)
             return 0
         if args.action == "setup":
             setup(project, args.scan)
             return 0
         if args.action in ("init", "add-skills"):
             banner()
-            install(project, Path.home())
+            install(project, Path.home(), session=session if session is not None else workspace.default(project))
             return 0
         if args.action == "discover":
             banner()
@@ -204,6 +218,8 @@ def main():
             alias, profile = chosen
         validate(profile)
         banner()
+        if session is None:
+            session = workspace.default(project)
         if args.action == "do":
 
             def resolve(flag, saved_role, name):
@@ -232,8 +248,9 @@ def main():
                 reviewer=reviewer,
                 review_rounds=args.review_rounds,
                 planner=planner,
+                lanes=workspace.lanes_dir(project, session),
             )
-        return plan_session(profile, alias, project, args.request)
+        return plan_session(profile, alias, project, args.request, session)
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
         return 130

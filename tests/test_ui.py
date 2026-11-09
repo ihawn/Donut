@@ -62,6 +62,15 @@ class UITests(unittest.TestCase):
             swapped = outline.translate(str.maketrans("/\\", "\\/"))[::-1]
             self.assertEqual(outline.strip(), swapped.strip(), line)
 
+    def test_donut_hole_answers_ok_in_the_warm_color(self):
+        from donut.ui import logo_segments
+
+        runs = [run for line in logo_segments() for run in line]
+        self.assertIn(("ok", "orange"), runs)
+        self.assertIn(("thing.", "orange"), runs)
+        # The little hole inside the donut hole is coral, so it reads as a donut too.
+        self.assertIn("coral", {color for text, color in runs if "(" in text})
+
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream):

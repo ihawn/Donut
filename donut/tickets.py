@@ -12,8 +12,9 @@ _NONE = re.compile(r"(?:none|n/a|-)?\.?\s*(?:\(.*\))?", re.I)
 _SLUG_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
-def tasks(project, lane):
-    return sorted((project / "swim_lanes" / lane).glob("[0-9]*_*.md"))
+def tasks(project, lane, lanes=None):
+    """A lane's tickets; lanes is the session's lanes folder (default: the project's swim_lanes/)."""
+    return sorted((Path(lanes or Path(project) / "swim_lanes") / lane).glob("[0-9]*_*.md"))
 
 
 def field(text, name):
@@ -68,9 +69,9 @@ class Ticket:
         return self.path.name
 
 
-def load(project):
+def load(project, lanes=None):
     """Every ticket in every lane, in lane order then number order."""
-    return [Ticket(path, lane) for lane in LANES for path in tasks(project, lane)]
+    return [Ticket(path, lane) for lane in LANES for path in tasks(project, lane, lanes)]
 
 
 def _index(tickets):
@@ -97,9 +98,9 @@ def blockers(ticket, tickets, done, held):
     return reasons
 
 
-def pick(project, attempted):
+def pick(project, attempted, lanes=None):
     """The next runnable ticket: in-progress work first, then the lowest numbered eligible ticket."""
-    tickets = load(project)
+    tickets = load(project, lanes)
     done, held = _index(tickets)
     for lane in RUNNABLE_LANES:
         for ticket in tickets:
@@ -110,9 +111,9 @@ def pick(project, attempted):
     return None
 
 
-def queue_report(project, attempted=()):
+def queue_report(project, attempted=(), lanes=None):
     """Lines explaining every unrun ticket in to_do/ and in_progress/, plus metadata warnings in any lane."""
-    tickets = load(project)
+    tickets = load(project, lanes)
     done, held = _index(tickets)
     lines = []
     for ticket in tickets:

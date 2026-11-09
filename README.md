@@ -49,7 +49,7 @@ Inside the terminal:
 /work   next 1
 ```
 
-`/plan` has the planner read your code and write tickets into `swim_lanes/to_do/`. `/work next 1` hands the next eligible ticket to the worker in a fresh process. Add `checkpoint` to get a git commit after every ticket, so a bad one is a single revert away:
+`/plan` has the planner read your code and write tickets into this session's `.donut/<session>/to_do/`. `/work next 1` hands the next eligible ticket to the worker in a fresh process. Add `checkpoint` to get a git commit after every ticket, so a bad one is a single revert away:
 
 ```
 /work   next all checkpoint
@@ -66,7 +66,7 @@ donut -m fast-local --work -p ../other-app   # choose the worker alias and the p
 ## Why
 
 - **Fresh context per ticket.** The worker never carries the whole project, or the last ticket's mistakes, into the next one.
-- **Tickets are files.** Plain Markdown in `swim_lanes/{to_do,in_progress,on_hold,blocked,done}/`. Read them, edit them, commit them, diff them.
+- **Tickets are files.** Plain Markdown in `.donut/<session>/{to_do,in_progress,on_hold,blocked,done}/`, one folder per session, so separate lines of work never share a queue. Read them, edit them, commit them, diff them.
 - **Donut checks the work, not just the story.** A ticket can carry a `**Verify:**` command. Donut runs it itself after the worker finishes; if it fails, the ticket is moved to `blocked/` and nothing that depends on it runs.
 - **A safety net you can see.** With `--checkpoint`, every ticket ends in a git commit. Every run records which files changed, in logs kept outside your repository.
 - **Nothing silently stuck.** When the queue cannot continue, Donut says which tickets are waiting, on what, and which ones have broken metadata, instead of just stopping.
@@ -96,7 +96,7 @@ flowchart LR
 |---|---|---|
 | The planner reads your project and writes tickets with exact files, steps, tests and acceptance criteria. | Each ticket gets its own process, its own context, a Verify command and completion notes. | Streamed output, a per-run summary table, and results and logs under `~/.local/state/donut`. |
 
-The interactive terminal wraps all of this with an inline slash-command menu (type `/`, arrow to a command, press Enter), model and ticket pickers, permission prompts and rendered Markdown. `/solo` skips the planner entirely and talks to a model directly, like Claude Code, and `/review` asks the reviewer to check code without editing it. `/planner`, `/worker`, `/reviewer` and `/soloist` pick each role's model. `/resume` reopens an earlier conversation in the mode and model it used. **Enter** sends, and messages sent mid-turn are queued. **Shift+Tab** or `/auto` switches to auto mode, where each provider's own reviewer approves safe actions. **Shift+Enter**, **Alt+Enter** or **Ctrl+J** insert a newline. **Ctrl+C** cancels the running turn and **Ctrl+Q** quits. For anything a provider only offers in its own client, `/native` drops you into it and brings you back.
+The interactive terminal wraps all of this with an inline slash-command menu (type `/`, arrow to a command, press Enter), model and ticket pickers, permission prompts and rendered Markdown. `/solo` skips the planner entirely and talks to a model directly, like Claude Code, and `/review` asks the reviewer to check code without editing it. `/planner`, `/worker`, `/reviewer` and `/soloist` pick each role's model. `/resume` reopens an earlier conversation in the mode, model and tickets session it used, `/session` switches sessions, and `/project` opens another project in a new window. `!command` runs a shell command and shows the model its output, and a model left waiting on a background process is woken when it finishes. Drag to select and copy any output, and click links to open them. **Enter** sends, and messages sent mid-turn are queued. **Shift+Tab** or `/auto` switches to auto mode, where each provider's own reviewer approves safe actions. **Shift+Enter**, **Alt+Enter** or **Ctrl+J** insert a newline. **Ctrl+C** cancels the running turn and **Ctrl+Q** quits. Installed plugin and skill commands, such as [Ponytail](https://github.com/DietrichGebert/ponytail)'s `/ponytail-review`, are in the same menu for every provider, and Ponytail's task numbers (cost, turns, agent time, tokens, tests) show under the prompt and go to its board. For anything a provider only offers in its own client, `/native` drops you into it and brings you back.
 
 > Subjective acceptance checks stay yours to verify, and a failed or blocked ticket is reported, never papered over. Only run unattended workers in projects you trust and have under version control.
 

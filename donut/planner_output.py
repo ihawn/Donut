@@ -3,6 +3,7 @@
 import json
 import re
 import time
+from pathlib import Path
 from .ui import paint
 
 
@@ -110,10 +111,10 @@ class PlannerOutput:
             print("\n" + text)
 
 
-def ticket_snapshot(project):
+def ticket_snapshot(project, lanes=None):
     tickets = {}
     for lane in ("to_do", "in_progress", "on_hold", "blocked", "done"):
-        for path in sorted((project / "swim_lanes" / lane).glob("[0-9]*_*.md")):
+        for path in sorted((Path(lanes or Path(project) / "swim_lanes") / lane).glob("[0-9]*_*.md")):
             text = path.read_text(encoding="utf-8")
             match = re.search(r"^\*\*Slug:\*\*\s*`?([^`\n]+)", text, re.M)
             identity = match[1].strip() if match else path.name
@@ -121,8 +122,8 @@ def ticket_snapshot(project):
     return tickets
 
 
-def show_created_tickets(project, before):
-    created = [path for identity, path in ticket_snapshot(project).items() if identity not in before]
+def show_created_tickets(project, before, lanes=None):
+    created = [path for identity, path in ticket_snapshot(project, lanes).items() if identity not in before]
     print(paint(f"\nTickets created: {len(created)}", "teal"))
     for path in sorted(created):
         print("  - " + path.relative_to(project).as_posix())

@@ -15,25 +15,26 @@ COLORS = {
 
 
 LOGO = r"""
-            _.------------._              .-----------------.
-        .-''   *    +    o  ''-.          |  do the thing.  |
-      .'   +    o    *    +     '.        '--.  .-----------'
-     /   o   .-''''''''''-.   *   \         /  /
-    |  *    /              \   +   |       / .'
-    |   +  |                |  o   |      /.'
-    |  o    \              /   *   |
-     \   *   '-.________.-'   +   /                 .-''-.
-      '.    +    o    *    o    .'                 ( '  . )
-        '-._   *    +   o   _.-'                    '-..-'
-            '-.__________.-'
+            _.------------._           .-----------------.
+        .-''   *    +    o  ''-.       |  do the thing.  |
+      .'  +    o     *     +    '.     '.  .-------------'
+     /   o  +   .-''''-.     *    \   / .'      .----.
+    |   *      /        \     +    | /.'        | ok |
+    |    +    |          |    o    |            '-. .'
+    |  o   +   \        /    *     |              |/
+     \   *      '-.__.-'  o   +   /           .-''''''-.
+      '.    +    o    *    o    .'           / o  __  * \
+        '-._   *    +   o   _.-'            |  + (__) o  |
+            '-.__________.-'                 \ *      + /
+                                              '-.____.-'
 """[1:]
 
-# Everything left of this column is the donut; to the right are the speech bubble and the donut hole.
+# Left of this column is the big donut; to the right are the speech bubbles and, from _HOLE_ROW down, the hole.
 _BUBBLE = 36
 _HOLE_ROW = 7
 _SPRINKLE_COLORS = ("coral", "teal", "gray", "coral", "teal")
 _SPRINKLES = set("*+o")
-_TAGLINE = "do the thing."
+_WORDS = ("do the thing.", "ok")
 
 
 def logo_segments():
@@ -44,23 +45,27 @@ def logo_segments():
     """
     lines = []
     sprinkle = 0
-    for row, line in enumerate(LOGO.splitlines()):
+    rows = LOGO.splitlines()
+    for row, line in enumerate(rows):
         runs = []
-        tagline = line.find(_TAGLINE)
+        spoken = set()
+        for word in _WORDS:
+            at = line.find(word, _BUBBLE)
+            if at != -1:
+                spoken.update(range(at, at + len(word)))
         for col, char in enumerate(line):
+            col_is_donut = col < _BUBBLE or row >= _HOLE_ROW
             if char == " ":
                 color = None
-            elif col < _BUBBLE:
-                if char in _SPRINKLES:
-                    color = _SPRINKLE_COLORS[sprinkle % len(_SPRINKLE_COLORS)]
-                    sprinkle += 1
-                else:
-                    color = "orange"
-            elif tagline != -1 and tagline <= col < tagline + len(_TAGLINE):
+            elif col in spoken:
                 color = "orange"
-            elif row >= _HOLE_ROW:
-                inside = "(" in line and line.index("(") < col < line.index(")")
-                color = "coral" if inside else "orange"
+            elif col_is_donut and char in _SPRINKLES:
+                color = _SPRINKLE_COLORS[sprinkle % len(_SPRINKLE_COLORS)]
+                sprinkle += 1
+            elif col >= _BUBBLE and row >= _HOLE_ROW and (char in "()" or (char == "_" and row < len(rows) - 1)):
+                color = "coral"  # The little hole in the donut hole.
+            elif col_is_donut:
+                color = "orange"
             else:
                 color = "gray"
             if runs and runs[-1][1] == color:

@@ -100,6 +100,15 @@ def claude_plan_usage(result):
     return windows
 
 
+# Codex item types that are tool calls, and the name Donut shows for each.
+CODEX_TOOLS = {
+    "commandExecution": "Bash",
+    "fileChange": "Edit",
+    "mcpToolCall": "MCP",
+    "webSearch": "WebSearch",
+    "dynamicToolCall": "Tool",
+}
+
 CODEX_DECISIONS = {"yes": "accept", "always": "acceptForSession", "no": "decline"}
 CODEX_SANDBOX = {"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"}
 
@@ -114,6 +123,11 @@ class CodexSession:
         self.turn_done = None
         self.permission = "ask"
         self.permission_changed = False
+
+    async def switch_model(self, model):
+        """Use another model from the next turn on, in the same thread, so Codex keeps its whole context."""
+        self.profile = dict(self.profile, model=model)
+        self.model_changed = bool(self.thread)
 
     async def set_permission(self, mode):
         """Codex applies policy overrides on the next turn/start, and they persist for later turns."""
@@ -196,8 +210,30 @@ class CodexSession:
                     method, params = event.get("method", ""), event.get("params", {})
                     if method == "item/agentMessage/delta":
                         self.emit("text", params.get("delta", ""))
+                        self.wrote = True
+                    elif method in ("item/reasoning/textDelta", "item/reasoning/summaryTextDelta"):
+                        self.emit("thinking", params.get("delta", ""))
                     elif method == "item/started":
-                        self.emit("activity", params.get("item", {}).get("type", "Working"))
+                        item = params.get("item", {})
+                        kind = item.get("type", "Working")
+                        if kind == "agentMessage" and getattr(self, "wrote", False):
+                            self.emit("break", "")  # A new message in the same turn.
+                        self.emit("activity", kind)
+                        if kind in CODEX_TOOLS:
+                            self.emit("tool", {"id": item.get("id"), "name": CODEX_TOOLS[kind], "input": item})
+                    elif method == "item/completed" and params.get("item", {}).get("type") in CODEX_TOOLS:
+                        item = params["item"]
+                        output = item.get("aggregatedOutput") or item.get("result") or item.get("error") or ""
+                        failed = item.get("status") == "failed" or item.get("exitCode") not in (None, 0)
+                        self.emit("tool_result", {"id": item.get("id"), "output": str(output), "error": failed})
+                    if method == "item/completed" and params.get("item", {}).get("type") == "commandExecution":
+                        item = params["item"]
+                        command = item.get("command")
+                        command = " ".join(command) if isinstance(command, list) else str(command or "")
+                        self.emit("command", {"id": item.get("id"), "command": command})
+                        self.emit(
+                            "command_output", {"id": item.get("id"), "output": item.get("aggregatedOutput") or ""}
+                        )
                     elif method == "thread/tokenUsage/updated":
                         self.usage = params.get("tokenUsage", {})
                     elif method == "account/rateLimits/updated":
@@ -254,12 +290,16 @@ class CodexSession:
             self.thread = result["thread"]["id"]
             self.permission_changed = False
         params = {"threadId": self.thread, "input": [{"type": "text", "text": text}]}
+        if getattr(self, "model_changed", False):
+            params["model"] = self.profile.get("model")  # turn/start overrides persist for later turns.
+            self.model_changed = False
         if self.permission_changed:
             params.update(
                 approvalPolicy=approval, sandboxPolicy={"type": CODEX_SANDBOX[sandbox]}, approvalsReviewer=reviewer
             )
             self.permission_changed = False
         self.turn_done = asyncio.get_running_loop().create_future()
+        self.wrote = False
         await self.request("turn/start", params)
         await self.turn_done
 
@@ -332,6 +372,14 @@ class ClaudeSession:
     async def _set_permission(self, mode):
         await self.client.set_permission_mode(native_permission("claude", mode))
 
+    async def switch_model(self, model):
+        """Change the model of this live conversation; Claude Code keeps its whole context."""
+        await self._call("set_model", model)
+        self.profile = dict(self.profile, model=model)
+
+    async def _set_model(self, model):
+        await self.client.set_model(model or None)
+
     async def _connect(self):
         from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, PermissionResultAllow, PermissionResultDeny
 
@@ -359,27 +407,105 @@ class ClaudeSession:
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
         self.info = await self.client.get_server_info() or {}
+        self.inbox, self.in_turn = asyncio.Queue(), False
+        self.pump = asyncio.create_task(self._pump())
+
+    def _handle(self, message, state):
+        """Show one message from Claude. Returns True when it ends a turn (its ResultMessage)."""
+        from claude_agent_sdk import (
+            AssistantMessage,
+            RateLimitEvent,
+            ResultMessage,
+            TextBlock,
+            ThinkingBlock,
+            ToolResultBlock,
+            ToolUseBlock,
+            UserMessage,
+        )
+
+        if isinstance(message, RateLimitEvent):
+            windows = claude_usage(message.rate_limit_info)
+            if windows:
+                self.emit("usage", windows)
+        elif isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock) and block.text.strip():
+                    if state.get("wrote"):
+                        self.emit("break", "")  # Separate text blocks are separate messages.
+                    self.emit("text", block.text)
+                    state["wrote"] = True
+                elif isinstance(block, ThinkingBlock) and block.thinking.strip():
+                    self.emit("thinking", block.thinking)
+                elif isinstance(block, ToolUseBlock):
+                    self.emit("activity", block.name)
+                    self.emit("tool", {"id": block.id, "name": block.name, "input": block.input})
+                    if block.name == "Bash":
+                        self.emit("command", {"id": block.id, "command": str(block.input.get("command", ""))})
+        elif isinstance(message, UserMessage) and isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, ToolResultBlock):
+                    content = block.content
+                    if isinstance(content, list):
+                        content = "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+                    self.emit("command_output", {"id": block.tool_use_id, "output": str(content or "")})
+                    self.emit(
+                        "tool_result",
+                        {"id": block.tool_use_id, "output": str(content or ""), "error": bool(block.is_error)},
+                    )
+        elif isinstance(message, ResultMessage):
+            self.session_id = getattr(message, "session_id", None) or getattr(self, "session_id", None)
+            self.usage = {"tokens": message.usage, "reported_cost_usd": message.total_cost_usd}
+            if message.is_error and not state.get("woken"):
+                raise RuntimeError(message.result or "Claude turn failed")
+            return True
+        return False
+
+    async def _pump(self):
+        """Read every message Claude sends, for the whole session.
+
+        During a turn Donut asked for, messages go to that turn. Between turns, Claude Code may start a turn of
+        its own, for example when a background shell it left running finishes; those are shown as a wake-up.
+        """
+        from claude_agent_sdk import SystemMessage
+
+        state = {}
+        try:
+            async for message in self.client.receive_messages():
+                if self.in_turn:
+                    await self.inbox.put(message)
+                    continue
+                if isinstance(message, SystemMessage):
+                    if getattr(message, "subtype", "") == "task_notification" and not state:
+                        summary = getattr(message, "summary", "") or (message.data or {}).get("summary", "")
+                        self.emit("background", summary or "A background task finished.")
+                    continue
+                if not state:
+                    state = {"woken": True}
+                    self.emit("wake_start", "")
+                try:
+                    finished = self._handle(message, state)
+                except Exception as error:
+                    self.emit("error", str(error))
+                    finished = True
+                if finished:
+                    state = {}
+                    self.emit("wake_end", "")
+        except Exception as error:
+            await self.inbox.put(error)
 
     async def _query(self, text):
-        from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock, ResultMessage, RateLimitEvent
-
-        await self.client.query(text)
-        async for message in self.client.receive_response():
-            if isinstance(message, RateLimitEvent):
-                windows = claude_usage(message.rate_limit_info)
-                if windows:
-                    self.emit("usage", windows)
-            elif isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        self.emit("text", block.text)
-                    elif isinstance(block, ToolUseBlock):
-                        self.emit("activity", block.name)
-            elif isinstance(message, ResultMessage):
-                self.session_id = getattr(message, "session_id", None) or getattr(self, "session_id", None)
-                self.usage = {"tokens": message.usage, "reported_cost_usd": message.total_cost_usd}
-                if message.is_error:
-                    raise RuntimeError(message.result or "Claude turn failed")
+        self.in_turn = True
+        try:
+            await self.client.query(text)
+            state = {}
+            while True:
+                message = await self.inbox.get()
+                if isinstance(message, Exception):
+                    raise message
+                if self._handle(message, state):
+                    return
+        finally:
+            self.in_turn = False
 
     async def _models(self):
         return [{"id": m["value"], "name": m.get("displayName", m["value"])} for m in self.info.get("models", [])]
@@ -394,6 +520,9 @@ class ClaudeSession:
         await self.client.interrupt()
 
     async def _close(self):
+        pump = getattr(self, "pump", None)
+        if pump is not None:
+            pump.cancel()
         await self.client.disconnect()
 
     @property
@@ -508,6 +637,7 @@ class QwenSession:
 
         error_reader = asyncio.create_task(errors())
         await input_prompt()
+        wrote = False
         async for line in self.process.stdout:
             try:
                 event = json.loads(line)
@@ -518,10 +648,16 @@ class QwenSession:
             if event.get("type") == "stream_event":
                 item = event.get("event", {})
                 block, delta = item.get("content_block", {}), item.get("delta", {})
+                if block.get("type") == "text" and wrote:
+                    self.emit("break", "")
                 if delta.get("type") == "text_delta":
                     self.emit("text", delta.get("text", ""))
+                    wrote = True
+                elif delta.get("type") == "thinking_delta":
+                    self.emit("thinking", delta.get("thinking", ""))
                 if block.get("type") == "tool_use":
                     self.emit("activity", block.get("name", "Working"))
+                    self.emit("tool", {"id": block.get("id"), "name": block.get("name", "Tool"), "input": {}})
             if event.get("type") == "result":
                 self.usage = event.get("usage", {})
                 if event.get("is_error"):

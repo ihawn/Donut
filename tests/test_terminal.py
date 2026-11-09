@@ -20,11 +20,22 @@ def setUpModule():
     os.environ["XDG_CONFIG_HOME"] = _config_home.name
     # The /resume conversation log goes here too, never to the real state folder.
     os.environ["XDG_STATE_HOME"] = os.path.join(_config_home.name, "state")
+    # Plugins and skills are read from empty provider folders, never the real ~/.claude or ~/.codex.
+    global _provider_homes
+    _provider_homes = patch.dict(
+        os.environ,
+        {
+            "CLAUDE_CONFIG_DIR": os.path.join(_config_home.name, "claude"),
+            "CODEX_HOME": os.path.join(_config_home.name, "codex"),
+        },
+    )
+    _provider_homes.start()
 
 
 def tearDownModule():
     import os
 
+    _provider_homes.stop()
     if _previous_config_home is None:
         os.environ.pop("XDG_CONFIG_HOME", None)
     else:
@@ -307,7 +318,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.app = Donut(Path(self.temp.name))
         self.fake = FakeSession(self.app)
 
-        async def session(alias, profile):
+        async def session(alias, profile, *args, **kwargs):
             self.app.sessions[(alias, profile.get("model"))] = self.fake
             return self.fake
 
@@ -546,7 +557,7 @@ class UsageCommandTests(unittest.IsolatedAsyncioTestCase):
                 "api": [],
             }
 
-            async def session(alias, profile):
+            async def session(alias, profile, *args, **kwargs):
                 fake = AsyncMock()
                 fake.quota.return_value = answers[alias]
                 app.sessions[(alias, profile.get("model"))] = fake
@@ -741,7 +752,7 @@ class ModeAndRoleTests(unittest.IsolatedAsyncioTestCase):
         self.app = Donut(Path(self.temp.name))
         self.sessions, self.purposes = {}, []
 
-        async def session(alias, profile, purpose=None):
+        async def session(alias, profile, purpose=None, **kwargs):
             self.purposes.append(purpose)
             key = self.app.session_key(alias, profile, purpose)
             if key not in self.sessions:
@@ -930,7 +941,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         app = Donut(Path(self.temp.name))
         counter = iter(range(1, 100))
 
-        async def session(alias, profile, purpose=None, resume=None, conversation=None):
+        async def session(alias, profile, purpose=None, resume=None, conversation=None, **kwargs):
             fake = FakeSession(app, delay=0)
             fake.provider_id = resume or f"provider-{next(counter)}"
             fake.conversation_id = conversation
@@ -1014,6 +1025,314 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         from donut.config import load
 
         self.assertEqual(load()["roles"]["solo"], {"alias": "claude", "model": "claude-sonnet-5-5"})
+
+    async def test_clear_and_new_start_completely_fresh(self):
+        from donut import conversations
+
+        for command in ("/clear", "/new"):
+            app = self.make_app()
+            async with app.run_test() as pilot:
+                await self.send(pilot, app, f"plan the wall jump before {command}")
+                self.assertTrue(app.sessions)
+                await self.send(pilot, app, command)
+                body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+                self.assertNotIn("wall jump", body)  # Nothing from the earlier conversation is left on screen.
+                self.assertIn("do the thing.", body)  # The screen looks as it did when Donut opened.
+                self.assertEqual((app.sessions, app.last_answer), ({}, ""))
+                await self.send(pilot, app, "plan sounds")
+        titles = [record["title"] for record in conversations.for_project(self.temp.name)]
+        self.assertEqual(titles.count("plan sounds"), 2)  # Each fresh start became its own conversation.
+        self.assertEqual(len(titles), 4)
+
+    async def test_each_window_plans_and_works_in_its_own_tickets_session(self):
+        from donut import conversations, workspace
+
+        app = self.make_app()
+        self.assertRegex(app.session_name, r"^\d{8}-\d{4}")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            folder = f".donut/{app.session_name}/"
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("tickets " + folder, body)
+            await self.send(pilot, app, "plan the wall jump")
+            planner = next(iter(app.sessions.values()))
+            self.assertIn(folder + "to_do/", planner.calls[-1])
+            self.assertEqual(conversations.for_project(self.temp.name)[0]["session"], app.session_name)
+            launched = []
+
+            async def capture(*args, **kwargs):
+                launched.append(args)
+                raise RuntimeError("not starting a worker in tests")
+
+            with patch("donut.terminal.asyncio.create_subprocess_exec", capture):
+                await self.send(pilot, app, "/work next 1")
+            self.assertEqual(launched[0][launched[0].index("--session") + 1], app.session_name)
+            first = app.session_name
+            workspace.create(app.project, first)  # What the (patched out) install does on a real /plan.
+            await self.send(pilot, app, "/session new")
+            self.assertNotEqual(app.session_name, first)
+            self.assertTrue((Path(self.temp.name) / ".donut" / app.session_name / "to_do").is_dir())
+            await self.send(pilot, app, "/session")
+            menu = app.query_one(Menu)
+            self.assertEqual([row[0] for row in menu.visible_rows][0], "New session")
+            self.assertIn(first, [row[0] for row in menu.visible_rows])
+            await pilot.press("escape")
+            await pilot.pause()
+            await self.send(pilot, app, f"/session {first}")
+            self.assertEqual(app.session_name, first)
+            self.assertEqual(workspace.relative(app.project, app.lanes), f".donut/{first}/")
+
+    async def test_resume_switches_back_to_the_conversations_tickets_session(self):
+        from donut import conversations
+
+        conversations.record_turn(
+            None, self.temp.name, "plan", "plan", "claude", "claude-opus-5-5", "sid", "jump", "ok", session="older"
+        )
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.execute("/resume")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            self.assertEqual(app.session_name, "older")
+
+    async def test_project_opens_another_project_in_a_new_window(self):
+        from donut import conversations
+
+        other = Path(self.temp.name) / "other-app"
+        other.mkdir()
+        conversations.remember_project(other)
+        app = self.make_app()
+        with patch("donut.terminal.open_window", return_value="a new Terminal window") as opened:
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await self.send(pilot, app, "/project")
+                menu = app.query_one(Menu)
+                self.assertEqual([row[0] for row in menu.visible_rows], ["other-app"])  # Not this project.
+                await pilot.press("enter")
+                await pilot.pause(0.3)
+                self.assertEqual(opened.call_args.args[0], other.resolve())
+                body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+                self.assertIn("Opened other-app in a new Terminal window.", body)
+                opened.return_value = None
+                await self.send(pilot, app, f"/project {other}")  # Typed as is, backslashes and all on Windows.
+                body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+                self.assertIn("No terminal app found", body)
+                self.assertIn(str(other.resolve()), body)
+                with patch.object(app, "open_project", new_callable=AsyncMock) as open_project:
+                    await self.send(pilot, app, r"/project C:\Users\me\my app")
+                open_project.assert_called_with(r"C:\Users\me\my app")  # Backslashes and spaces kept.
+
+    async def test_streamed_updates_become_separate_paragraphs_in_the_transcript(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.turn_text, app.shown = "", 0
+            for piece in ("Status: found the job.", "\n\nConfirmed: it is slow.", "\n\n```sql\nSELECT 1\n\nFROM t\n"):
+                app.event("text", piece)
+            await pilot.pause()
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("Status: found the job.", body)
+            self.assertIn("Confirmed: it is slow.", body)
+            self.assertNotIn("SELECT", body)  # A code block is never split at its blank line.
+            self.assertIn("SELECT 1", app.turn_text[app.shown :])  # Still being written, above the prompt.
+            app.answer()
+            await pilot.pause()
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("FROM t", body)
+            self.assertEqual(body.count("Status: found the job."), 1)  # Committed once, not again at the end.
+            self.assertTrue(app.last_answer.startswith("Status: found the job.\n\nConfirmed"))
+            self.assertEqual(app.shown, len(app.turn_text))
+
+    async def test_links_are_clickable(self):
+        from donut.terminal import link_markdown, markdown
+
+        self.assertEqual(
+            link_markdown("See https://github.com/x/y/pull/1427. Also [PR](https://a.b/c) and <https://d.e>"),
+            "See <https://github.com/x/y/pull/1427>. Also [PR](https://a.b/c) and <https://d.e>",
+        )
+        code = "Run `curl https://a.b/c` then\n```\nhttps://in.code/block\n```\n"
+        self.assertEqual(link_markdown(code), code)  # Code stays exactly as written.
+        self.assertTrue(markdown("x").hyperlinks)
+        app = self.make_app()
+        with patch.object(app, "open_url") as opened:
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                log = app.query_one(RichLog)
+                log.clear()
+                app.say("PR: https://github.com/example/project/pull/1427")
+                app.say(markdown("Merged https://github.com/x/y/pull/2 today."))
+                await pilot.pause()
+                await pilot.click(RichLog, offset=(12, 0))  # Inside the first URL (the log has 1 column of padding).
+                await pilot.pause()
+                opened.assert_called_with("https://github.com/example/project/pull/1427")
+                await pilot.click(RichLog, offset=(14, 1))
+                await pilot.pause()
+                opened.assert_called_with("https://github.com/x/y/pull/2")
+                calls = opened.call_count
+                await pilot.click(RichLog, offset=(2, 0))  # "PR:" is not a link.
+                await pilot.pause()
+                self.assertEqual(opened.call_count, calls)
+
+    async def test_selected_text_is_copied(self):
+        app = self.make_app()
+        with patch("donut.terminal.copy_native") as native, patch.object(app, "copy_to_clipboard") as terminal:
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                log = app.query_one(RichLog)
+                log.clear()
+                app.say("Output line one")
+                app.say("PR https://github.com/x/y/pull/9")
+                await pilot.pause()
+                await pilot.mouse_down(RichLog, offset=(1, 0))
+                await pilot.hover(RichLog, offset=(7, 1))
+                await pilot.mouse_up(RichLog, offset=(7, 1))
+                await pilot.pause()
+                native.assert_called_with("Output line one\nPR http")  # Copied as soon as the mouse is released.
+                terminal.assert_called_with("Output line one\nPR http")
+                native.reset_mock()
+                await pilot.press("ctrl+c")  # With a selection, Ctrl+C copies instead of cancelling.
+                await pilot.pause()
+                native.assert_called_with("Output line one\nPR http")
+
+    async def test_bang_runs_a_shell_command_and_the_model_sees_it(self):
+        import sys
+
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await self.send(pilot, app, f'!"{sys.executable}" -c "print(\'hello from the shell\')"')
+            await pilot.pause(0.5)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("hello from the shell", body)
+            self.assertIn("exit 0", body)
+            self.assertEqual(self.opened, [])  # No model was involved.
+            await self.send(pilot, app, "what did that print?")
+            planner = next(iter(app.sessions.values()))
+            self.assertIn("Shell commands I ran in the project before this message", planner.calls[-1])
+            self.assertIn("hello from the shell", planner.calls[-1])
+            self.assertTrue(planner.calls[-1].rstrip().endswith("what did that print?"))
+            await self.send(pilot, app, "and now?")
+            self.assertNotIn("Shell commands I ran", planner.calls[-1])  # Given once.
+
+    async def test_a_model_waiting_on_a_command_is_woken_when_it_exits(self):
+        import sys
+
+        app = self.make_app()
+        replies = iter(
+            [f'Started the build.\n\nDONUT-WAIT: "{sys.executable}" -c "print(\'build ok\')"', "The build passed."]
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.permission = "full"
+            await self.send(pilot, app, "build it")
+            planner = next(iter(app.sessions.values()))
+            planner.donut_waits = True
+            original = planner.query
+
+            async def query(text):
+                planner.calls.append(text)
+                app.event("text", next(replies))
+
+            planner.query = query
+            await self.send(pilot, app, "build it again")
+            for _ in range(100):
+                if any("build ok" in call for call in planner.calls):
+                    break
+                await pilot.pause(0.05)
+            await pilot.pause(0.3)
+            wake = planner.calls[-1]
+            self.assertIn("exited with code 0", wake)
+            self.assertIn("build ok", wake)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("waking", body)
+            self.assertIn("The build passed.", body)
+            self.assertFalse(app.busy)
+            planner.query = original
+
+    async def test_a_turn_claude_starts_itself_is_shown(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.send(pilot, app, "start the deploy")
+            session = next(iter(app.sessions.values()))
+            app.event("background", "Background command finished", None, session)
+            app.event("wake_start", "", None, session)
+            self.assertTrue(app.busy)
+            app.event("text", "The deploy finished; all checks green.", None, session)
+            app.event("wake_end", "", None, session)
+            await pilot.pause()
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("woken by a background task", body)
+            self.assertIn("The deploy finished; all checks green.", body)
+            self.assertFalse(app.busy)
+
+    async def test_verbosity_changes_what_is_shown_never_what_is_sent(self):
+        def turn(app):
+            app.turn_text, app.shown, app.message_start = "", 0, 0
+            app.event("thinking", "The user wants the status. ")
+            app.event("thinking", "Check git first.")
+            app.event("text", "Status: reading the repo.")
+            app.event("tool", {"id": "t1", "name": "Bash", "input": {"command": "git status --short"}})
+            app.event("tool_result", {"id": "t1", "output": " M a.py\n M b.py", "error": False})
+            app.event("break", "")
+            app.event("text", "Two files changed.")
+            app.answer()
+
+        seen = {}
+        for level in ("quiet", "normal", "verbose", "full"):
+            app = self.make_app()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await self.send(pilot, app, f"/verbosity {level}")
+                log = app.query_one(RichLog)
+                log.clear()
+                turn(app)
+                await pilot.pause()
+                seen[level] = "\n".join(strip.text for strip in log.lines)
+                self.assertEqual(app.turn_text, "Status: reading the repo.\n\nTwo files changed.")  # Unchanged.
+        self.assertNotIn("Status: reading", seen["quiet"])
+        self.assertIn("Two files changed.", seen["quiet"])
+        self.assertIn("Status: reading", seen["normal"])
+        self.assertNotIn("⏺ Bash", seen["normal"])
+        self.assertNotIn("Check git", seen["normal"])
+        self.assertIn("⏺ Bash  git status --short", seen["verbose"])
+        self.assertIn("⎿ 2 lines", seen["verbose"])
+        self.assertNotIn("M a.py", seen["verbose"])
+        self.assertIn("✻ The user wants the status. Check git first.", seen["full"])
+        self.assertIn("M a.py", seen["full"])
+        from donut.config import load
+
+        self.assertEqual(load().get("verbosity"), "full")  # Saved for next time.
+
+    async def test_the_transcript_stays_at_the_bottom_while_a_long_reply_streams(self):
+        app = self.make_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            log = app.query_one(RichLog)
+            for number in range(80):
+                app.say(f"earlier line {number}")
+            await pilot.pause()
+            app.turn_text, app.shown, app.message_start = "", 0, 0
+            for number in range(10):
+                app.event("text", f"word {number} " * 30 + "\n")  # One long paragraph, still being written.
+                await pilot.pause()
+            await pilot.pause(0.2)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)
+            response = app.query_one("#response")
+            self.assertEqual(response.scroll_y, response.max_scroll_y)  # Shows the newest lines.
+            app.answer()
+            await pilot.pause(0.2)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)
+            # Scrolled up to read: new output does not pull the view back down.
+            log.scroll_relative(y=-10, animate=False)
+            log.on_mouse_scroll_up(None)  # What a mouse wheel scroll up calls.
+            await pilot.pause()
+            self.assertFalse(app.follow)
+            where = log.scroll_y
+            app.say("a new line")
+            await pilot.pause(0.2)
+            self.assertEqual(log.scroll_y, where)
 
     async def test_resume_with_nothing_saved(self):
         app = self.make_app()

@@ -1,18 +1,18 @@
 ---
 name: swim-lane-worker
-description: Implement scoped tickets from swim_lanes, verify their tests, record completion notes, and move them between lanes. Use for next-task, named-task, and whole-queue requests; not task planning.
+description: Implement scoped tickets from a Donut session's lanes, verify their tests, record completion notes, and move them between lanes. Use for next-task, named-task, and whole-queue requests; not task planning.
 ---
 
 # Swim-lane worker
 
-Paths are relative to the project root (the directory containing `swim_lanes/`). Follow the project's own instructions file (QWEN.md, CLAUDE.md or AGENTS.md, whichever your agent reads) and the assigned ticket. Do not load planner instructions from `.claude/`, `.cursor/` or `skills/donut-planner/`.
+Paths are relative to the project root. Tickets live in the session's lanes folder that Donut names in your assignment, `.donut/<session>/` (older projects: `swim_lanes/`); lane names below such as `to_do/` and `done/` are inside it, and other sessions' folders are not yours to touch. Follow the project's own instructions file (QWEN.md, CLAUDE.md or AGENTS.md, whichever your agent reads) and the assigned ticket. Do not load planner instructions from `.claude/`, `.cursor/` or `skills/donut-planner/`.
 
 ## Pick work
 
 - A named task or a batch-runner assignment means that task only, then stop. This overrides picking other in-progress tasks.
-- “Next task” means finish one in-progress task first; otherwise pick the lowest-numbered eligible ticket from swim_lanes/to_do/.
+- “Next task” means finish one in-progress task first; otherwise pick the lowest-numbered eligible ticket from to_do/.
 - “All” means recheck the queue after each ticket. Do not retry tasks blocked during this run; continue independent tasks, skipping blocked dependencies.
-- Tickets have **Slug:** `name` and **Depends on:** `other-slug`, … or None. Dependencies must be in swim_lanes/done/ before starting.
+- Tickets have **Slug:** `name` and **Depends on:** `other-slug`, … or None. Dependencies must be in done/ before starting.
 - A ticket may carry **Verify:** `command`. Donut runs that command itself after you move the ticket to done; if it fails, Donut moves the ticket to blocked/. Run it yourself first and never edit or remove the Verify line.
 - Keep the complete filename unchanged. Move to_do → in_progress before editing; in_progress → done only after verification.
 
@@ -22,7 +22,7 @@ When review is on, a reviewer model checks each ticket you move to done, in a fr
 
 ## On-hold tickets
 
-`swim_lanes/on_hold/` contains deliberately parked tickets. Never pick, move, or edit them, even for a named-task assignment. Report that the ticket is on hold instead. It must first be explicitly released back to `to_do/` by the user or by a planner following the user's request. A held dependency is not complete; skip dependent work. Do not move blocked work into `on_hold/` automatically: move execution failures to `blocked/`.
+`on_hold/` contains deliberately parked tickets. Never pick, move, or edit them, even for a named-task assignment. Report that the ticket is on hold instead. It must first be explicitly released back to `to_do/` by the user or by a planner following the user's request. A held dependency is not complete; skip dependent work. Do not move blocked work into `on_hold/` automatically: move execution failures to `blocked/`.
 
 ## Execute one ticket
 
@@ -50,6 +50,6 @@ Statuses: Done, Blocked, Skipped. Report actual test outcomes and outstanding hu
 
 ## Blocked tickets
 
-`swim_lanes/blocked/` holds tickets that cannot proceed because of failed preflight checks, missing dependencies, ambiguity, or repeated implementation failures. Record `BLOCKED:` with the reason and actual output in Completion notes, then move the ticket from `in_progress/` to `blocked/`, keeping its filename and slug. This replaces older guidance to leave blocked tickets in `in_progress/`.
+`blocked/` holds tickets that cannot proceed because of failed preflight checks, missing dependencies, ambiguity, or repeated implementation failures. Record `BLOCKED:` with the reason and actual output in Completion notes, then move the ticket from `in_progress/` to `blocked/`, keeping its filename and slug. This replaces older guidance to leave blocked tickets in `in_progress/`.
 
 Never pick or automatically retry tickets in `blocked/`, including named assignments. Their dependencies are not complete. A planner may investigate and clarify the blocker, but move the ticket back to `to_do/` only when the user explicitly requests another attempt and the blocker is addressed. Reserve blocked ticket numbers and slugs, avoid duplicate tickets, and preserve their completion notes. Keep active work that depends on blocked tickets out of the runnable queue. Workers continue independent eligible tickets.
