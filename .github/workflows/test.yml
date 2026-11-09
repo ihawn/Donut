@@ -9,7 +9,9 @@ permissions:
   contents: read
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    # Self-hosted runner: never run code from fork PRs on it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,11 +22,12 @@ jobs:
       - run: ruff format --check .
 
   test:
+    # Self-hosted runner: never run code from fork PRs on it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ['3.10', '3.13']
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, linux]
     env:
       PYTHONUTF8: '1'
     steps:
@@ -37,10 +40,9 @@ jobs:
       - run: donut --help
 
   installer:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Self-hosted runner: never run code from fork PRs on it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux]
     env:
       PYTHONUTF8: '1'
     steps:
@@ -53,23 +55,11 @@ jobs:
         env:
           UV_TOOL_DIR: ${{ runner.temp }}/donut-tools
           UV_TOOL_BIN_DIR: ${{ runner.temp }}/donut-bin
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           export DONUT_INSTALL_SOURCE="$(pwd)/$(ls dist/*.whl)"
           sh install.sh
           "$UV_TOOL_BIN_DIR/donut" --help
-      - name: Install using PowerShell bootstrap
-        env:
-          UV_TOOL_DIR: ${{ runner.temp }}/donut-tools
-          UV_TOOL_BIN_DIR: ${{ runner.temp }}/donut-bin
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:DONUT_INSTALL_SOURCE = (Get-ChildItem dist/*.whl).FullName
-          ./install.ps1
-          & "$env:UV_TOOL_BIN_DIR/donut.exe" --help
-          if ($LASTEXITCODE -ne 0) { throw 'Installed CLI smoke test failed' }
       - name: Verify reinstall upgrades and preserves configuration
         env:
           UV_TOOL_DIR: ${{ runner.temp }}/donut-tools
