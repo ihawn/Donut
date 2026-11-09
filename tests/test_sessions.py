@@ -101,3 +101,21 @@ class UsageParsingTests(unittest.TestCase):
         }
         self.assertEqual([(w["window"], w["percent"]) for w in codex_usage(snapshot)], [("5h", 12.0), ("7d", 40.0)])
         self.assertEqual(codex_usage(None), [])
+
+    def test_claude_get_usage_answer(self):
+        from donut.sessions import claude_plan_usage
+
+        answer = {
+            "rate_limits_available": True,
+            "rate_limits": {
+                "five_hour": {"utilization": 18.0, "resets_at": "2026-11-09T03:40:00Z"},
+                "seven_day": {"utilization": 30.0, "resets_at": None},
+                "seven_day_opus": None,
+            },
+        }
+        windows = claude_plan_usage(answer)
+        self.assertEqual([(w["window"], w["percent"]) for w in windows], [("5h", 18.0), ("7d", 30.0)])
+        self.assertEqual(windows[0]["resets_at"], 1794195600.0)
+        self.assertEqual(claude_plan_usage({"rate_limits_available": False, "rate_limits": None}), [])
+        self.assertIsNone(claude_plan_usage({"rate_limits_available": True, "rate_limits": None}))
+        self.assertIsNone(claude_plan_usage("unexpected"))

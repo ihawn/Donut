@@ -5,6 +5,9 @@ from pathlib import Path
 from unittest.mock import patch, AsyncMock
 from donut.terminal import Donut, Draft, Menu, OptionList, RichLog
 
+# Never start real providers from the background usage refresh during tests.
+Donut.AUTO_REFRESH_QUOTAS = False
+
 
 class TerminalTests(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_commands_and_mode_picker(self):
@@ -33,6 +36,20 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(menu.kind, "pick")
                 self.assertEqual(len(app.screen_stack), 1)  # Inline, not a new screen.
                 self.assertIs(app.focused, app.query_one(Draft))
+                self.assertEqual(
+                    [row[3] for row in menu.visible_rows],
+                    [
+                        "/work next 1",
+                        "/work next 3",
+                        "/work next all",
+                        "/work next 1 checkpoint",
+                        "/work next all checkpoint",
+                    ],
+                )
+                rendered = str(menu.query_one(OptionList).get_option_at_index(1).prompt)
+                self.assertIn("Next 3 tickets", rendered)
+                self.assertTrue(rendered.rstrip().endswith("/work next 3"))
+                self.assertIn("/work next N", menu.border_subtitle)
                 await pilot.press("escape")
                 await pilot.pause()
                 self.assertFalse(menu.is_open)
@@ -472,6 +489,75 @@ class ActiveModelAndUsageTests(unittest.IsolatedAsyncioTestCase):
                 app.event("usage", [{"window": "5h", "percent": 91.0}], ("codex",))
                 await pilot.pause()
                 bar = str(app.query_one("#usage").render())
-                self.assertIn("18% 5h · 30% 7d", bar)
-                self.assertIn("91% 5h", bar)
+                self.assertIn("82% left 5h · 70% 7d", bar)
+                self.assertIn("9% left 5h", bar)
                 self.assertIn("━", bar)
+
+
+class UsageCommandTests(unittest.IsolatedAsyncioTestCase):
+    def app(self, temp):
+        config = {
+            "aliases": {
+                "claude": {"engine": "claude"},
+                "codex": {"engine": "codex"},
+                "api": {"engine": "claude", "claude_config_dir": "/api"},
+            },
+            "planner": "claude",
+        }
+        with patch("donut.terminal.load", return_value=config):
+            return Donut(Path(temp))
+
+    async def test_usage_command_shows_what_is_left_for_each_account(self):
+        import time
+
+        with tempfile.TemporaryDirectory() as temp:
+            app = self.app(temp)
+            soon = time.time() + 2 * 3600 + 600
+            answers = {
+                "claude": [{"window": "5h", "percent": 18.0, "resets_at": soon}, {"window": "7d", "percent": 30.0}],
+                "codex": None,
+                "api": [],
+            }
+
+            async def session(alias, profile):
+                fake = AsyncMock()
+                fake.quota.return_value = answers[alias]
+                app.sessions[(alias, profile.get("model"))] = fake
+                app.session_profiles[(alias, profile.get("model"))] = profile
+                return fake
+
+            app.session = session
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.execute("/usage")
+                await pilot.pause(0.3)
+                body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+                bar = str(app.query_one("#usage").render())
+            self.assertNotIn("Error", body)
+            self.assertIn("82% left  5h  resets in 2h", body)
+            self.assertIn("70% left  7d", body)
+            self.assertIn("codex   usage unavailable", body)
+            self.assertIn("api   no plan limits (API billing)", body)
+            self.assertIn("82% left 5h ↻2h", bar)
+            self.assertIn("api no plan limit", bar)
+
+    async def test_refresh_without_connect_only_asks_open_sessions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = self.app(temp)
+            app.session = AsyncMock(side_effect=AssertionError("must not start a session"))
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app.refresh_quotas(connect=False)
+                self.assertEqual(app.quotas, {})
+
+
+class QuotaFormattingTests(unittest.TestCase):
+    def test_countdown_and_remaining(self):
+        from donut.terminal import countdown, remaining
+
+        self.assertEqual(countdown(1000 + 2 * 3600 + 600, now=1000), "2h10m")
+        self.assertEqual(countdown(1000 + 3 * 86400 + 4 * 3600, now=1000), "3d4h")
+        self.assertEqual(countdown(1000 + 30, now=1000), "1m")
+        self.assertEqual(countdown(500, now=1000), "")
+        self.assertEqual(countdown(None), "")
+        self.assertEqual((remaining(18.4), remaining(120), remaining(-5)), (82, 0, 100))

@@ -9,6 +9,20 @@ from .providers import native_permission
 
 
 # The approval answers the terminal returns: allow once, allow for the rest of the session, or deny.
+def epoch_seconds(value):
+    """Reset times arrive as Unix seconds (Claude events, Codex) or ISO 8601 strings (Claude get_usage)."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value:
+        from datetime import datetime
+
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def window_label(minutes):
     """300 -> "5h", 10080 -> "7d"."""
     if not minutes:
@@ -26,7 +40,7 @@ def codex_usage(snapshot):
                 {
                     "window": window_label(window.get("windowDurationMins")),
                     "percent": float(window["usedPercent"]),
-                    "resets_at": window.get("resetsAt"),
+                    "resets_at": epoch_seconds(window.get("resetsAt")),
                 }
             )
     return windows
@@ -45,7 +59,7 @@ def claude_usage(info):
                 {
                     "window": CLAUDE_WINDOWS.get(key, key),
                     "percent": window["utilization"] * 100,
-                    "resets_at": window.get("resetsAt"),
+                    "resets_at": epoch_seconds(window.get("resetsAt")),
                 }
             )
     if not windows and getattr(info, "utilization", None) is not None:
@@ -53,9 +67,36 @@ def claude_usage(info):
             {
                 "window": CLAUDE_WINDOWS.get(info.rate_limit_type, info.rate_limit_type or ""),
                 "percent": info.utilization * 100,
-                "resets_at": info.resets_at,
+                "resets_at": epoch_seconds(info.resets_at),
             }
         )
+    return windows
+
+
+def claude_plan_usage(result):
+    """Windows from the CLI's get_usage control request, the data behind Claude Code's /usage.
+
+    Returns [] when plan limits do not apply (API key, Bedrock, Vertex) and None when the answer is unusable.
+    Utilization there is a percentage, 0-100.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("rate_limits_available") is False:
+        return []
+    limits = result.get("rate_limits")
+    if not isinstance(limits, dict):
+        return None
+    windows = []
+    for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+        window = limits.get(key)
+        if isinstance(window, dict) and isinstance(window.get("utilization"), (int, float)):
+            windows.append(
+                {
+                    "window": CLAUDE_WINDOWS[key],
+                    "percent": float(window["utilization"]),
+                    "resets_at": epoch_seconds(window.get("resets_at")),
+                }
+            )
     return windows
 
 
@@ -104,13 +145,17 @@ class CodexSession:
 
     async def refresh_usage(self):
         """Report account rate limits for the usage bar; failures only mean the bar stays empty."""
+        windows = await self.quota()
+        if windows:
+            self.emit("usage", windows)
+
+    async def quota(self):
+        """Current account windows, or None when Codex could not say."""
         try:
             result = await self.request("account/rateLimits/read")
         except Exception:
-            return
-        windows = codex_usage(result.get("rateLimits"))
-        if windows:
-            self.emit("usage", windows)
+            return None
+        return codex_usage(result.get("rateLimits")) or None
 
     async def send(self, message):
         self.process.stdin.write((json.dumps(message) + "\n").encode())
@@ -257,6 +302,21 @@ class ClaudeSession:
         if getattr(self, "owner", None) and not self.owner.done():
             await self._call("set_permission", mode)
 
+    async def quota(self):
+        """Plan usage without sending a prompt, through the CLI's get_usage control request."""
+        if not getattr(self, "owner", None) or self.owner.done():
+            return None
+        try:
+            return await asyncio.wait_for(self._call("quota"), 30)
+        except Exception:
+            return None
+
+    async def _quota(self):
+        query = getattr(self.client, "_query", None)
+        if query is None:
+            return None
+        return claude_plan_usage(await query._send_control_request({"subtype": "get_usage"}))
+
     async def _set_permission(self, mode):
         await self.client.set_permission_mode(native_permission("claude", mode))
 
@@ -381,6 +441,9 @@ class QwenSession:
 
     async def connect(self):
         pass
+
+    async def quota(self):
+        return None  # Local and OpenAI-compatible models have no plan limits to report.
 
     async def set_permission(self, mode):
         # Every Qwen turn is a new process, so the next turn picks this up.

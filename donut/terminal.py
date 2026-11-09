@@ -81,13 +81,38 @@ def usage_key(profile):
     return ("local", profile.get("model") or engine)
 
 
-def usage_bar(percent, width=8):
-    """A thin bar colored by how close the window is to its limit."""
-    filled = max(0, min(width, round(percent / 100 * width)))
-    color = TEAL if percent < 50 else ORANGE if percent < 80 else CORAL
+def remaining(percent_used):
+    return max(0, min(100, round(100 - percent_used)))
+
+
+def left_color(left):
+    """Teal while plenty is left, orange under half, coral under a fifth."""
+    return TEAL if left > 50 else ORANGE if left > 20 else CORAL
+
+
+def usage_bar(percent_used, width=6):
+    """A thin bar showing how much of the window is left."""
+    left = remaining(percent_used)
+    filled = max(0, min(width, round(left / 100 * width)))
+    color = left_color(left)
     bar = Text("━" * filled, style=color)
     bar.append("─" * (width - filled), style="#3b4652")
     return bar, color
+
+
+def countdown(resets_at, now=None):
+    """Seconds since the epoch -> "2h10m", "3d4h", "45m"; empty when unknown or past."""
+    if not resets_at:
+        return ""
+    seconds = int(resets_at - (now if now is not None else time.time()))
+    if seconds <= 0:
+        return ""
+    days, hours, minutes = seconds // 86400, seconds % 86400 // 3600, seconds % 3600 // 60
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{max(minutes, 1)}m"
 
 
 def model_name(profile, alias):
@@ -220,7 +245,8 @@ class Menu(Vertical):
 
     DEFAULT_CSS = f"""
     Menu {{height: auto; max-height: 14; display: none; padding: 0 1; margin: 0 1;
-           border: round {CORAL}; border-title-color: {ORANGE}; border-title-style: bold;}}
+           border: round {CORAL}; border-title-color: {ORANGE}; border-title-style: bold;
+           border-subtitle-color: {DIM};}}
     Menu.-open {{display: block;}}
     Menu OptionList {{border: none; padding: 0; background: transparent; max-height: 12;}}
     Menu OptionList > .option-list--option-highlighted {{background: #3a2a10;}}
@@ -256,14 +282,16 @@ class Menu(Vertical):
         return self.has_class("-open")
 
     def open(self, kind, title, rows, term="", details=None, subtitle=""):
-        """rows: (label, value) or (label, value, description) tuples.
+        """rows: (label, value), (label, value, description) or (label, value, description, command) tuples.
+
+        command is shown as a third column: the typed command that does the same thing.
 
         kind is "slash", "pick" (typing filters) or "approve" (fixed rows, number keys choose, details shown).
         """
         self.kind = kind
         self.border_title = title
         self.border_subtitle = subtitle
-        self.rows = [row if len(row) == 3 else (row[0], row[1], "") for row in rows]
+        self.rows = [tuple(row) + ("",) * (4 - len(row)) for row in rows]
         self.set_class(kind == "approve", "-approve")
         self.query_one("#menu-details", Static).update(details or "")
         self.add_class("-open")
@@ -284,16 +312,19 @@ class Menu(Vertical):
 
     def render_rows(self, highlighted):
         """Redraw the rows; the highlighted one gets a pointer and brighter text, like Claude Code."""
-        width = max((len(label) for label, _, _ in self.visible_rows), default=0)
+        width = max((len(row[0]) for row in self.visible_rows), default=0)
+        described = max((len(row[2]) for row in self.visible_rows), default=0)
         prompts = []
-        for index, (label, _, description) in enumerate(self.visible_rows):
+        for index, (label, _, description, command) in enumerate(self.visible_rows):
             chosen = index == highlighted
             prompt = Text("› " if chosen else "  ", style=f"bold {CORAL}")
             if self.kind == "approve":
                 prompt.append(f"{index + 1}. ", style=ORANGE if chosen else DIM)
             prompt.append(label.ljust(width), style=f"bold {ORANGE}" if chosen else ORANGE)
-            if description:
-                prompt.append("   " + description, style="#ffffff" if chosen else DIM)
+            if description or command:
+                prompt.append("   " + description.ljust(described), style="#ffffff" if chosen else DIM)
+            if command:
+                prompt.append("   " + command, style=f"bold {TEAL}" if chosen else TEAL)
             prompts.append(Option(prompt))
         options = self.query_one(OptionList)
         options.set_options(prompts)
@@ -362,6 +393,8 @@ class Draft(TextArea):
 
 class Donut(App):
     TITLE = "Donut"
+    QUOTA_REFRESH_SECONDS = 300
+    AUTO_REFRESH_QUOTAS = True  # Tests turn this off so no provider is started in the background.
     ENABLE_COMMAND_PALETTE = False  # The inline slash menu replaces Textual's palette.
     CSS = f"""
     Screen {{background: #101820;}}
@@ -420,7 +453,8 @@ class Donut(App):
         self.running = None  # (role, alias, profile) of the model doing the current turn
         self.started = time.monotonic()
         self.detail = ""
-        self.usage = {}  # usage_key -> [{"window", "percent", "resets_at"}]
+        self.quotas = {}  # usage_key -> [{"window", "percent", "resets_at"}]; [] means no plan limits apply
+        self.session_profiles = {}
 
     def compose(self):
         yield RichLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
@@ -444,6 +478,39 @@ class Donut(App):
             self.say(Text("No accounts configured. Exit and run donut setup.", style=CORAL))
         self.query_one(Draft).focus()
         self.set_interval(0.1, self.tick)
+        if self.AUTO_REFRESH_QUOTAS:
+            self.refresh_quotas_soon(connect=True)
+            self.set_interval(self.QUOTA_REFRESH_SECONDS, lambda: self.refresh_quotas_soon(connect=True))
+
+    def refresh_quotas_soon(self, connect=False):
+        self.run_worker(self.refresh_quotas(connect), group="quota", exclusive=True)
+
+    async def refresh_quotas(self, connect=False):
+        """Ask each account how much of its plan is left, without sending any prompt.
+
+        connect=True starts a session for an account that has none yet; otherwise only open sessions are asked.
+        """
+        for key, (label, alias, profile) in self.usage_groups().items():
+            if key[0] == "local":
+                continue
+            session = next(
+                (s for (a, m), s in self.sessions.items() if usage_key(self.session_profiles.get((a, m), {})) == key),
+                None,
+            )
+            try:
+                if session is None and connect:
+                    session = await self.session(alias, profile)
+                if session is None:
+                    continue
+                windows = await session.quota()
+            except Exception:
+                continue  # Not logged in, offline, or the provider is not installed: the bar stays as it was.
+            if windows is not None:
+                self.quotas[key] = windows
+                try:
+                    self.status()
+                except NoMatches:
+                    return
 
     def tick(self):
         if self.busy:
@@ -541,7 +608,10 @@ class Donut(App):
         self.query_one("#status", Static).update(line)
 
     def usage_groups(self):
-        """One entry per quota: every configured Claude login and Codex, plus the local models in use."""
+        """One entry per quota: every configured Claude login and Codex, plus the local models in use.
+
+        Maps usage_key -> (label, alias, profile).
+        """
         groups = {}
         selected = {self.selected.get(role) for role in ("plan", "work")}
         for alias, profile in self.config.get("aliases", {}).items():
@@ -550,38 +620,47 @@ class Donut(App):
                 continue
             label = alias if key[0] != "local" else model_name(profile, alias).split(":")[0]
             if key not in groups or alias in selected:
-                groups[key] = label
+                groups[key] = (label, alias, profile)
         for role in ("plan", "work"):  # Models picked with /model may not be saved aliases.
-            profile = self.profiles.get(role, {})
+            profile, alias = self.profiles.get(role, {}), self.selected.get(role)
             if profile and usage_key(profile) not in groups:
                 key = usage_key(profile)
-                groups[key] = self.selected.get(role) if key[0] != "local" else model_name(profile, "").split(":")[0]
+                label = alias if key[0] != "local" else model_name(profile, "").split(":")[0]
+                groups[key] = (label, alias, profile)
         return groups
 
     def render_usage(self):
         line = Text()
         running = usage_key(self.running[2]) if self.busy and self.running else None
-        for key, label in self.usage_groups().items():
+        for key, (label, _, _) in self.usage_groups().items():
             if line:
-                line.append("    ")
+                line.append("   ")
             line.append(label, style=f"bold {ORANGE}" if key == running else GRAY)
             line.append(" ")
             if key[0] == "local":
                 line.append("local", style=DIM)
                 continue
-            windows = self.usage.get(key)
-            if not windows:
-                line.append("────────", style="#3b4652")
+            windows = self.quotas.get(key)
+            if windows is None:
+                line.append("──────", style="#3b4652")
                 line.append(" –", style=DIM)
+                continue
+            if not windows:
+                line.append("no plan limit", style=DIM)
                 continue
             first, *rest = windows
             bar, color = usage_bar(first["percent"])
             line.append_text(bar)
-            line.append(f" {round(first['percent'])}%", style=color)
+            line.append(f" {remaining(first['percent'])}% left", style=color)
             if first["window"]:
                 line.append(" " + first["window"], style=DIM)
+            reset = countdown(first.get("resets_at"))
+            if reset:
+                line.append(f" ↻{reset}", style=DIM)
             for window in rest[:1]:
-                line.append(f" · {round(window['percent'])}%", style=usage_bar(window["percent"])[1])
+                left = remaining(window["percent"])
+                line.append(" · ", style=DIM)
+                line.append(f"{left}%", style=left_color(left))
                 if window["window"]:
                     line.append(" " + window["window"], style=DIM)
         self.query_one("#usage", Static).update(line)
@@ -651,7 +730,7 @@ class Donut(App):
             self.say("Error: " + str(text), CORAL)
         elif kind == "usage":
             if key is not None and isinstance(text, list):
-                self.usage[key] = text
+                self.quotas[key] = text
                 self.status()
         else:
             name = str(text)
@@ -743,6 +822,7 @@ class Donut(App):
                     await session.close()
                 raise
             self.sessions[key] = session
+            self.session_profiles[key] = profile
         return self.sessions[key]
 
     def on_text_area_changed(self, event):
@@ -846,6 +926,8 @@ class Donut(App):
             self.active = None
             self.busy = False
             self.running = None
+            if self.AUTO_REFRESH_QUOTAS:
+                self.refresh_quotas_soon()
             try:
                 self.status("Ready")
                 self.query_one(Draft).focus()
@@ -868,12 +950,16 @@ class Donut(App):
                     else await self.choose(
                         "Work tickets",
                         [
-                            ("Next ticket", "next 1", "one ticket in a fresh context"),
-                            ("Next 3 tickets", "next 3", "up to three, one fresh context each"),
-                            ("All eligible tickets", "next all", "until the queue is empty or blocked"),
-                            ("Next ticket + checkpoint", "next 1 checkpoint", "git commit after it"),
-                            ("All tickets + checkpoints", "next all checkpoint", "git commit after each"),
+                            (label, value, description, "/work " + value)
+                            for label, value, description in (
+                                ("Next ticket", "next 1", "one ticket in a fresh context"),
+                                ("Next 3 tickets", "next 3", "up to three, one fresh context each"),
+                                ("All eligible tickets", "next all", "until the queue is empty or blocked"),
+                                ("Next ticket + checkpoint", "next 1 checkpoint", "git commit after it"),
+                                ("All tickets + checkpoints", "next all checkpoint", "git commit after each"),
+                            )
                         ],
+                        subtitle="or type /work next N for any number",
                     )
                 )
                 if choice:
@@ -1024,13 +1110,29 @@ class Donut(App):
                 self.selected[self.mode], self.profiles[self.mode] = selected
 
     async def usage(self):
-        for alias, profile in self.config["aliases"].items():
-            try:
-                session = await self.session(alias, profile)
-                data = await session.account_usage()
-                self.say(alias + "\n" + json.dumps(data, indent=2))
-            except Exception as error:
-                self.say(alias + ": usage unavailable: " + str(error))
+        """How much of each plan is left, as the usage bar shows it but with every window and reset time."""
+        self.status("checking usage")
+        await self.refresh_quotas(connect=True)
+        for key, (label, _, _) in self.usage_groups().items():
+            line = Text("  " + label, style=f"bold {ORANGE}")
+            windows = self.quotas.get(key)
+            if key[0] == "local":
+                line.append("   local model, no plan limits", style=DIM)
+            elif windows is None:
+                line.append("   usage unavailable (not signed in, or the provider did not report it)", style=DIM)
+            elif not windows:
+                line.append("   no plan limits (API billing)", style=DIM)
+            self.say(line)
+            for window in windows or []:
+                left = remaining(window["percent"])
+                row = Text("    ")
+                row.append_text(usage_bar(window["percent"], width=20)[0])
+                row.append(f"  {left}% left", style=left_color(left))
+                row.append(f"  {window['window'] or 'window'}", style=GRAY)
+                reset = countdown(window.get("resets_at"))
+                if reset:
+                    row.append(f"  resets in {reset}", style=DIM)
+                self.say(row)
 
     async def work_tickets(self, choice):
         words = choice.split()
