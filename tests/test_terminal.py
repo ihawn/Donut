@@ -346,6 +346,23 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.fake.calls), 2)
             self.assertTrue(self.fake.calls[1].endswith("second"))
 
+    async def test_display_only_commands_run_at_once_during_a_turn(self):
+        self.fake.delay = 3
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "a long task")
+            await self.wait_for(pilot, lambda: self.app.active is not None)
+            await self.send(pilot, "/help")
+            await self.send(pilot, "/usage")
+            await self.send(pilot, "and then this")
+            await pilot.pause(0.3)
+            body = "\n".join(strip.text for strip in self.app.query_one(RichLog).lines)
+            self.assertIn("/plan · /work", body)  # /help answered mid-turn.
+            self.assertIn("Latest figures; they refresh when the current turn ends.", body)
+            self.assertEqual(self.app.queued, ["and then this"])  # A message to the model still waits.
+            self.assertTrue(self.app.busy)  # The turn carries on.
+            self.assertEqual(len(self.fake.calls), 1)
+            await self.wait_for(pilot, lambda: len(self.fake.calls) == 2, timeout=8)
+
     async def test_messages_sent_during_a_turn_are_queued_then_run(self):
         self.fake.delay = 3
         async with self.app.run_test() as pilot:
@@ -1333,6 +1350,73 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.say("a new line")
             await pilot.pause(0.2)
             self.assertEqual(log.scroll_y, where)
+
+    async def test_renaming_the_session_renames_its_tickets_folder(self):
+        from donut import conversations, workspace
+
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            first = app.session_name
+            await self.send(pilot, app, "plan the wall jump")
+            workspace.create(app.project, first)  # What the (patched out) install does on a real /plan.
+            planner = next(iter(app.sessions.values()))
+
+            async def query(text):
+                planner.calls.append(text)
+                app.event("text", "Session renamed to: fix dashboard pr")
+
+            planner.query = query
+            # The planner is Claude: its own /rename names the session, and the folder follows.
+            await self.send(pilot, app, "/rename")
+            self.assertEqual(planner.calls[-1], "/rename")
+            self.assertEqual(app.session_name, "fix-dashboard-pr")
+            self.assertTrue((Path(self.temp.name) / ".donut" / "fix-dashboard-pr" / "to_do").is_dir())
+            self.assertFalse((Path(self.temp.name) / ".donut" / first).exists())
+            self.assertEqual(conversations.for_project(self.temp.name)[0]["session"], "fix-dashboard-pr")
+            # The soloist is Codex, which has no /rename: Donut names the folder itself.
+            await self.send(pilot, app, "/solo")
+            await self.send(pilot, app, "/rename Wall jump: v2")
+            self.assertEqual(app.session_name, "Wall-jump-v2")
+            self.assertEqual(len(planner.calls), 2)  # No model was asked.
+
+    async def test_the_session_name_titles_the_window_and_shows_in_the_status_line(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            written = []
+            original = app._driver.write
+            app._driver.write = lambda data: (written.append(data), original(data))
+            app.rename_session("fix dashboard pr")
+            await pilot.pause()
+            project = Path(self.temp.name).name
+            self.assertIn(f"\x1b]0;fix-dashboard-pr · {project} · Donut\x07", written)
+            status = str(app.query_one("#status").render())
+            self.assertIn("session fix-dashboard-pr", status)
+            written.clear()
+            app.status()
+            self.assertEqual(written, [])  # Only written when it changes.
+            app.session_name = "evil\x07\x1b]0;x"
+            app.show_title()
+            self.assertNotIn("\x1b]0;x", written[-1][4:])  # Control characters never reach the terminal.
+
+    async def test_running_background_shells_show_in_the_status_line(self):
+        app = self.make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            app.event("task", {"id": "t1", "state": "running", "kind": "shell", "description": "Poll the preload run"})
+            app.event("task", {"id": "t2", "state": "running", "kind": "shell", "description": "Watch CI"})
+            app.event("task", {"id": "a1", "state": "running", "kind": "agent", "description": "Explore"})
+            await pilot.pause()
+            self.assertIn("⏳ 2 shells running · 1 agent running", str(app.query_one("#status").render()))
+            app.event("task", {"id": "t1", "state": "completed"})
+            app.event("task", {"id": "t1", "state": "completed"})  # Reported twice: counted once.
+            app.event("task", {"id": "a1", "state": "killed"})
+            await pilot.pause()
+            self.assertIn("⏳ 1 shell running", str(app.query_one("#status").render()))
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertEqual(body.count("Background shell completed  Poll the preload run"), 1)
+            self.assertIn("Background agent killed  Explore", body)
 
     async def test_resume_with_nothing_saved(self):
         app = self.make_app()

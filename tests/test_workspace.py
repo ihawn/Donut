@@ -50,6 +50,32 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(workspace.count(self.project, "newer")["to_do"], 1)
 
 
+class RenameTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.project = Path(temp.name)
+
+    def test_names_become_safe_folder_names(self):
+        self.assertEqual(workspace.slug("fix dashboard pr"), "fix-dashboard-pr")
+        self.assertEqual(workspace.slug("  Fix: PR #1431 / dates!  "), "Fix-PR-1431-dates")
+        self.assertEqual(workspace.slug("../../etc"), "etc")
+        self.assertEqual(workspace.slug("skills"), "")  # .donut/skills holds the worker skill.
+        self.assertEqual(workspace.slug("   "), "")
+
+    def test_rename_moves_the_tickets_and_never_overwrites(self):
+        lanes = workspace.create(self.project, "20261109-1424")
+        (lanes / "to_do" / "001_a.md").write_text("a")
+        self.assertEqual(workspace.rename(self.project, "20261109-1424", "fix dashboard pr"), "fix-dashboard-pr")
+        self.assertTrue((self.project / ".donut" / "fix-dashboard-pr" / "to_do" / "001_a.md").is_file())
+        self.assertFalse((self.project / ".donut" / "20261109-1424").exists())
+        workspace.create(self.project, "other")
+        self.assertEqual(workspace.rename(self.project, "other", "fix dashboard pr"), "fix-dashboard-pr-2")
+        self.assertEqual(workspace.rename(self.project, "not-made-yet", "later"), "later")  # Nothing to move.
+        with self.assertRaises(ValueError):
+            workspace.rename(self.project, "later", "!!!")
+
+
 class RecentProjectTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -73,6 +99,15 @@ class RecentProjectTests(unittest.TestCase):
         self.assertEqual(conversations.for_project(c)[0]["session"], "s1")
         if os.name != "nt":  # Windows has no Unix permission bits.
             self.assertEqual(oct(conversations.projects_path().stat().st_mode & 0o777), "0o600")
+
+
+class ConversationOrderTests(RecentProjectTests):
+    def test_newest_first_even_when_the_clock_does_not_move(self):
+        # Windows' clock is coarse: two turns saved at once used to tie and come back oldest first.
+        with patch("donut.conversations.time.time", return_value=1000.0):
+            conversations.record_turn(None, self.root, "solo", "solo", "a", "m", None, "rename jump", "x")
+            conversations.record_turn(None, self.root, "plan", "plan", "a", "m", None, "plan sounds", "y")
+        self.assertEqual([r["title"] for r in conversations.for_project(self.root)], ["plan sounds", "rename jump"])
 
 
 class OpenWindowTests(unittest.TestCase):

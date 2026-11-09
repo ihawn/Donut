@@ -234,6 +234,15 @@ class Transcript(RichLog, can_focus=False):
         return line
 
 
+# Commands that only show something (or change only what is shown), so they run at once even mid-turn.
+INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity"}
+
+
+def is_instant(text):
+    words = text.split()
+    return bool(words) and (words[0] in INSTANT_COMMANDS or words[:2] == ["/ponytail", "band"])
+
+
 def model_name(profile, alias):
     return profile.get("model") or alias or "provider default"
 
@@ -250,6 +259,7 @@ COMMANDS = [
     ("/model", "Choose the model for the current mode"),
     ("/resume", "Resume an earlier conversation in its mode, model and tickets session"),
     ("/session", "Switch this window's tickets folder, .donut/<session>/, or start a new one"),
+    ("/rename", "Name this session; its tickets folder becomes .donut/<name>/"),
     ("/project", "Open another project in a new window"),
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
     ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
@@ -622,8 +632,10 @@ class Donut(App):
         self.last_answer = ""
         self.picking = None
         self.follow = True  # Keep the transcript at its end until the user scrolls up.
+        self.background_tasks = {}  # task id -> (kind, description) for shells and agents models left running
         self.threads = {}  # "plan", "solo", "review" -> the session holding that conversation now
-        self.histories = {}  # the same -> [(speaker, text, model)], so a new model can take a conversation over
+        # Every exchange in this window, whatever mode and model: each session is given what it has not seen.
+        self.exchanges = []
         self.turn_tools = []
         self.after_tools = False
         level = self.config.get("verbosity")
@@ -662,6 +674,9 @@ class Donut(App):
         yield Footer()
 
     def on_mount(self):
+        driver = getattr(self, "_driver", None)
+        if driver is not None:
+            driver.write("\x1b[22;0t")  # Save the terminal's own title, restored when Donut exits.
         try:
             conversations.remember_project(self.project)
         except OSError:
@@ -856,12 +871,16 @@ class Donut(App):
         permission.append("  (shift+tab)", style=DIM)
         if self.queued:
             permission.append(f"   {len(self.queued)} queued", style=CORAL)
-        if self.waiting:
-            permission.append(f"   ⏳ {len(self.waiting)} waiting", style=TEAL)
+        running = self.background_summary()
+        if running:
+            permission.append(f"   ⏳ {running}", style=f"bold {TEAL}")
         if self.verbosity != "normal":
             permission.append(f"   {self.verbosity}", style=DIM)
         entries.append(permission)
-        entries.append(Text("tickets " + workspace.relative(self.project, self.lanes), style=DIM))
+        session = Text("session ", style=DIM)
+        session.append(self.session_label(), style=f"bold {ORANGE}")
+        entries.append(session)
+        self.show_title()
         widget = self.query_one("#status", Static)
         widget.update(pack_entries(entries, widget.content_size.width or self.size.width - 4))
 
@@ -987,7 +1006,7 @@ class Donut(App):
             draft.move_cursor(draft.document.end)
             return
         draft.clear()
-        self.execute(command)
+        self.submit(command)
 
     def event(self, kind, text, key=None, source=None):
         buffer = getattr(source, "wake_buffer", None)
@@ -1007,6 +1026,9 @@ class Donut(App):
             return
         if kind == "background":
             self.say(Text("  ⏰ " + str(text), style=TEAL))
+            return
+        if kind == "task":
+            self.track_task(text)
             return
         if buffer is not None and kind == "text":
             buffer.append(text)
@@ -1180,14 +1202,13 @@ class Donut(App):
             # Another provider or login: give the new model the conversation so far, then retire the old one.
             old_key = next(k for k, v in self.sessions.items() if v is previous)
             old_name = model_name(self.session_profiles.get(old_key, {}), old_key[0].split("@")[0])
-            session.handoff = self.handoff_text(thread, old_name, model_name(profile, alias))
             self.sessions.pop(old_key, None)
             self.session_profiles.pop(old_key, None)
             try:
                 await previous.close()
             except Exception:
                 pass
-            if session.handoff:
+            if self.exchanges:
                 self.say(Text(f"  {model_name(profile, alias)} continues the conversation from {old_name}.", style=DIM))
         if track:
             session.donut_conversation = thread  # Not .thread: Codex sessions keep their own thread id there.
@@ -1221,15 +1242,13 @@ class Donut(App):
         return session
 
     def remember_exchange(self, session, text):
-        """Keep each conversation's exchanges, whatever model answers, so another model can pick them up."""
-        thread = getattr(session, "donut_conversation", None)
-        if thread is None:
-            return
+        """Record an exchange for the whole window, so every other mode and model can be given it."""
         tools = "; ".join(self.turn_tools[:30])
-        history = self.histories.setdefault(thread, [])
-        history.append(("you", text, ""))
         answer = self.turn_text.strip() + (f"\n(Tools used: {tools})" if tools else "")
-        history.append(("model", answer, self.running_name()))
+        self.exchanges.append(
+            {"mode": self.role_of(session), "model": self.running_name(), "you": text, "answer": answer, "by": session}
+        )
+        session.donut_seen = len(self.exchanges)
 
     def running_name(self):
         if not self.running:
@@ -1237,24 +1256,35 @@ class Donut(App):
         role, alias, profile = self.running
         return model_name(profile, alias)
 
-    def handoff_text(self, thread, old_name, new_name, limit=100_000):
-        """The conversation so far, oldest first, for a model taking it over from another provider."""
-        history = self.histories.get(thread) or []
-        if not history:
+    def context_for(self, session, limit=100_000):
+        """What happened in this window that this session has not seen: other modes' and models' exchanges.
+
+        A new session gets everything so far; one already in the conversation gets only what came after its
+        last turn. Its own exchanges are never repeated, since the provider keeps those itself.
+        """
+        missed = [entry for entry in self.exchanges[getattr(session, "donut_seen", 0) :] if entry["by"] is not session]
+        if not missed:
             return ""
         lines, size = [], 0
-        for speaker, text, name in reversed(history):
-            line = ("User: " if speaker == "you" else f"Assistant ({name or old_name}): ") + text
+        for entry in reversed(missed):
+            where = f"{entry['mode']} mode" + (f", {entry['model']}" if entry["model"] else "")
+            line = f"[{where}]\nUser: {entry['you']}\nAssistant: {entry['answer']}"
             if size + len(line) > limit:
                 lines.append("(earlier messages left out for length)")
                 break
             lines.append(line)
             size += len(line)
-        body = "\n\n".join(reversed(lines))
+        first = not getattr(session, "donut_seen", 0)
+        lead = (
+            "This conversation started before you joined it"
+            if first
+            else "Other modes and models worked in this Donut window since your last turn"
+        )
         return (
-            f"(Donut: you are {new_name}, taking over this conversation from {old_name}. The conversation so far "
-            "is below, oldest first. Treat it as your own history and continue from it; the project on disk "
-            "reflects the work already done.)\n<conversation>\n" + body + "\n</conversation>\n\n"
+            f"(Donut: {lead}. Here is what happened, oldest first. Treat it as shared context: you may be asked "
+            "about it. The project on disk reflects the work already done.)\n<conversation>\n"
+            + "\n\n".join(reversed(lines))
+            + "\n</conversation>\n\n"
         )
 
     def has_ponytail(self, profile):
@@ -1272,10 +1302,7 @@ class Donut(App):
         if self.shell_runs:
             prompt = background.shell_note(self.shell_runs) + prompt
             self.shell_runs = []
-        handoff = getattr(session, "handoff", "")
-        if handoff:
-            prompt = handoff + prompt
-            session.handoff = ""
+        prompt = self.context_for(session) + prompt
         waits = isinstance(session, (CodexSession, QwenSession))
         if waits and not getattr(session, "told_wait", False):
             # Claude Code wakes itself when a background shell ends; the others learn Donut's DONUT-WAIT line.
@@ -1330,7 +1357,7 @@ class Donut(App):
             menu.filter(text)
         elif menu.kind == "approve":
             return
-        elif text.startswith("/") and not any(c.isspace() for c in text) and not self.busy:
+        elif text.startswith("/") and not any(c.isspace() for c in text):
             if not menu.is_open:
                 menu.open("slash", "Commands", self.slash_rows())
             if not menu.filter(text):
@@ -1346,13 +1373,26 @@ class Donut(App):
         if not text:
             return
         editor.clear()
-        if self.busy:
+        self.submit(text)
+
+    def submit(self, text):
+        """Run a message now, or, during a turn, queue it; commands that only show something run at once."""
+        if not self.busy:
+            self.execute(text)
+        elif is_instant(text):
+            self.run_worker(self.instant(text), group="instant")
+        else:
             # Like Claude Code: a message sent during a turn waits and runs as soon as the turn ends.
             self.queued.append(text)
             self.say(Text("  queued · " + text.splitlines()[0][:100], style=DIM))
             self.status("Thinking…")
-            return
-        self.execute(text)
+
+    async def instant(self, text):
+        """A display-only command during a turn: its result shows now and the turn carries on undisturbed."""
+        try:
+            await self.command(text)
+        except Exception as error:
+            self.say("Error: " + str(error), CORAL)
 
     def on_draft_submitted(self, event):
         self.action_send()
@@ -1372,7 +1412,8 @@ class Donut(App):
         Tickets, model choices and the mode are kept; nothing from the earlier conversation is carried over.
         """
         sessions, self.sessions = list(self.sessions.values()), {}
-        self.threads, self.histories = {}, {}
+        self.threads, self.exchanges = {}, []
+        self.background_tasks = {}
         self.ponytail_installed = {}
         for session in sessions:
             await session.close()
@@ -1455,6 +1496,9 @@ class Donut(App):
                 os.killpg(self.child.pid, signal.SIGTERM)
 
     async def action_quit(self):
+        driver = getattr(self, "_driver", None)
+        if driver is not None:
+            driver.write("\x1b[23;0t")  # Put back the title the terminal had before Donut.
         await self.action_cancel()
         for session in self.sessions.values():
             await session.close()
@@ -1702,12 +1746,48 @@ class Donut(App):
                         self.say("  Install or remove plugins with /native.", DIM)
         elif name == "/native":
             await self.native()
+        elif name == "/rename" and self.profiles.get(self.role, {}).get("engine") != "claude":
+            # Only Claude Code has its own /rename; elsewhere Donut renames the session's tickets folder.
+            if not args:
+                self.say("  Use /rename NAME. The tickets folder becomes .donut/NAME/.", DIM)
+                return
+            self.rename_session(" ".join(args))
         else:
             self.active = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
             self.start_turn(self.role)
             self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
             await self.ask(text, plugins.translate(text, plugins.commands(self.profiles[self.role], self.project)))
             self.answer()
+            if name == "/rename":
+                # Claude Code renamed its session (to the name given, or one it made up): the folder follows.
+                renamed = re.search(r"Session renamed to:\s*(.+)", self.turn_text)
+                if renamed:
+                    self.rename_session(renamed[1].strip().strip("`*\"'"))
+
+    def track_task(self, task):
+        """Background shells and agents a model left running: shown in the status line until they end."""
+        if not isinstance(task, dict) or not task.get("id"):
+            return
+        if task.get("state") == "running":
+            self.background_tasks[task["id"]] = (task.get("kind", "shell"), task.get("description", ""))
+        elif task["id"] in self.background_tasks:
+            kind, description = self.background_tasks.pop(task["id"])
+            ok = task.get("state") == "completed"
+            line = Text(f"  {'✓' if ok else '✗'} Background {kind} {task.get('state')}", style=TEAL if ok else CORAL)
+            if description:
+                line.append("  " + _clip(description, 100), style=DIM)
+            self.say(line)
+        self.status()
+
+    def background_summary(self):
+        """ "2 shells running · 1 agent running" for the status line, or ""."""
+        counts = {}
+        for kind, _ in self.background_tasks.values():
+            counts[kind] = counts.get(kind, 0) + 1
+        parts = [f"{n} {kind}{'' if n == 1 else 's'} running" for kind, n in sorted(counts.items(), reverse=True)]
+        if self.waiting:
+            parts.append(f"{len(self.waiting)} waiting")
+        return " · ".join(parts)
 
     def show_pending(self, pending):
         """The part of the answer still being written, above the prompt; the transcript stays at its end."""
@@ -1953,6 +2033,41 @@ class Donut(App):
         self.say(Text(f"  exit {code}", style=TEAL if code == 0 else CORAL))
         self.shell_runs.append((command, code, "\n".join(lines)))
 
+    def session_label(self):
+        return self.session_name or "swim_lanes"
+
+    def window_title(self):
+        """What the terminal's window and tab show, so windows are easy to tell apart and switch between."""
+        return f"{self.session_label()} · {Path(self.project).name or self.project} · Donut"
+
+    def show_title(self):
+        title = self.window_title()
+        if title == getattr(self, "shown_title", None):
+            return
+        self.shown_title = title
+        driver = getattr(self, "_driver", None)
+        if driver is not None:
+            # OSC 0 sets the window and tab title; control characters are left out so the title cannot escape.
+            driver.write("\x1b]0;" + "".join(c for c in title if c.isprintable()) + "\x07")
+
+    def rename_session(self, name):
+        """Name this window's session: its tickets folder becomes .donut/<name>/ (spaces and the like -> -)."""
+        old = self.session_name
+        try:
+            new = workspace.rename(self.project, old, name)
+        except (ValueError, OSError) as error:
+            self.say(f"  Tickets folder not renamed: {error}", CORAL)
+            return
+        self.session_name = new
+        try:
+            conversations.rename_session(self.project, old, new)
+        except OSError:
+            pass
+        self.say(Text(f"  Tickets folder · {workspace.relative(self.project, self.lanes)}", style=f"bold {ORANGE}"))
+        if old is None:
+            self.say("  The older swim_lanes/ folder stays as it was.", DIM)
+        self.status()
+
     async def choose_session(self, name=None):
         """Point this window at another tickets folder: an existing session, a new one, or older swim_lanes/."""
         if name is None:
@@ -2059,12 +2174,22 @@ class Donut(App):
             self.session_name = record["session"]
         purpose = mode if mode in ("solo", "review") else None
         self.status("resuming")
-        await self.session(alias, profile, purpose, resume=record.get("provider_id"), conversation=record["id"])
-        # The saved recap seeds this conversation's history, so a later switch to another provider has context.
-        self.histories[purpose or "plan"] = [
-            ("you" if message.get("from") == "you" else "model", message.get("text", ""), record.get("model", ""))
-            for message in record.get("messages", [])
-        ]
+        resumed = await self.session(
+            alias, profile, purpose, resume=record.get("provider_id"), conversation=record["id"]
+        )
+        # The saved recap joins the window's history, so other modes and models can be given it too.
+        messages = record.get("messages", [])
+        for you, model in zip(messages[::2], messages[1::2]):
+            self.exchanges.append(
+                {
+                    "mode": mode,
+                    "model": record.get("model", ""),
+                    "you": you.get("text", ""),
+                    "answer": model.get("text", ""),
+                    "by": resumed,
+                }
+            )
+        resumed.donut_seen = len(self.exchanges)
         line = Text("  Resumed", style=f"bold {ORANGE}")
         line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
         line.append(f" · {record.get('title', '')}", style=GRAY)
@@ -2213,8 +2338,12 @@ class Donut(App):
 
     async def usage(self):
         """How much of each plan is left, as the usage bar shows it but with every window and reset time."""
-        self.status("checking usage")
-        await self.refresh_quotas(connect=True)
+        if self.active is not None or self.child is not None:
+            # A model is mid-turn, and a Claude session answers one request at a time: asking now would wait.
+            self.say("  Latest figures; they refresh when the current turn ends.", DIM)
+        else:
+            self.status("checking usage")
+            await self.refresh_quotas(connect=True)
         for key, (label, _, _) in self.usage_groups().items():
             line = Text("  " + label, style=f"bold {ORANGE}")
             windows = self.quotas.get(key)

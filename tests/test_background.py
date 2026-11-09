@@ -84,5 +84,54 @@ class ClaudeWakeTests(unittest.IsolatedAsyncioTestCase):
         session.pump.cancel()
 
 
+class ClaudeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
+    async def test_background_shells_are_reported_while_they_run(self):
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ResultMessage,
+            TaskNotificationMessage,
+            TaskStartedMessage,
+            TaskUpdatedMessage,
+            TextBlock,
+        )
+        from donut.sessions import ClaudeSession
+
+        events = []
+        session = ClaudeSession(Path("."), {}, lambda kind, data: events.append((kind, data)), None)
+        stream = asyncio.Queue()
+
+        class Client:
+            async def receive_messages(self):
+                while True:
+                    yield await stream.get()
+
+            async def query(self, text):
+                await stream.put(
+                    TaskStartedMessage("task_started", {}, "t1", "Poll the preload run", "u", "s", "b1", "local_bash")
+                )
+                await stream.put(AssistantMessage([TextBlock("I started the preload job.")], "m"))
+                await stream.put(ResultMessage("success", 1, 1, False, 1, "sid"))
+
+        session.client, session.inbox, session.in_turn = Client(), asyncio.Queue(), False
+        session.pump = asyncio.create_task(session._pump())
+        await asyncio.wait_for(session._query("run it"), 2)
+        self.assertIn(
+            ("task", {"id": "t1", "state": "running", "kind": "shell", "description": "Poll the preload run"}), events
+        )
+        events.clear()
+        # The turn is over; the shell finishes later.
+        await stream.put(TaskUpdatedMessage("task_updated", {}, "t1", {"status": "completed"}))
+        await stream.put(
+            TaskNotificationMessage("task_notification", {}, "t1", "completed", "/tmp/o", "Run succeeded", "u", "s")
+        )
+        for _ in range(50):
+            if len(events) >= 3:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(events[0], ("task", {"id": "t1", "state": "completed"}))
+        self.assertIn(("background", "Run succeeded"), events)
+        session.pump.cancel()
+
+
 if __name__ == "__main__":
     unittest.main()

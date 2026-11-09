@@ -79,3 +79,31 @@ def count(project, session):
     """How many tickets each lane of a session holds."""
     lanes = lanes_dir(project, session)
     return {lane: len(list((lanes / lane).glob("[0-9]*_*.md"))) for lane in LANES}
+
+
+def slug(name):
+    """A session name made safe for a folder: "fix dashboard pr" -> "fix-dashboard-pr"."""
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", (name or "").strip()).strip("-.")
+    text = re.sub(r"-{2,}", "-", text)[:64].rstrip("-.")
+    return text if valid(text) else ""
+
+
+def rename(project, old, new_name):
+    """Move a session's tickets folder to a folder named after new_name. Returns the session's new name.
+
+    A name already taken gets -2, -3 and so on. A folder that does not exist yet just takes the new name.
+    """
+    new = slug(new_name)
+    if not new:
+        raise ValueError(f"Cannot make a folder name from {new_name!r}")
+    if new == old:
+        return new
+    root = Path(project) / ROOT
+    base, number = new, 1
+    while (root / new).exists():
+        number += 1
+        new = f"{base}-{number}"
+    source = root / old if old else None
+    if source is not None and source.is_dir():
+        source.rename(root / new)
+    return new

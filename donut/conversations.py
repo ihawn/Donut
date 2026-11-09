@@ -58,7 +58,8 @@ def record_turn(record_id, project, mode, role, alias, model, provider_id, user_
     """Add one exchange to a conversation, creating it on its first turn. Returns the record's id."""
     records = load_all()
     record = next((r for r in records if r["id"] == record_id), None) if record_id else None
-    now = time.time()
+    # Strictly later than any saved turn, so "most recent first" holds even when the clock is coarse (Windows).
+    now = max([time.time()] + [r.get("updated", 0) + 1e-6 for r in records])
     if record is None:
         record = {
             "id": record_id or uuid.uuid4().hex,
@@ -130,3 +131,16 @@ def recent_projects():
         if project and project not in ordered and Path(project).is_dir():
             ordered.append(project)
     return ordered
+
+
+def rename_session(project, old, new):
+    """Point this project's saved conversations at a renamed tickets folder, so /resume still finds it."""
+    project = str(Path(project).resolve())
+    records = load_all()
+    changed = False
+    for record in records:
+        if record.get("project") == project and record.get("session") == old:
+            record["session"] = new
+            changed = True
+    if changed:
+        _write(records)

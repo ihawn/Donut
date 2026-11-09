@@ -410,8 +410,30 @@ class ClaudeSession:
         self.inbox, self.in_turn = asyncio.Queue(), False
         self.pump = asyncio.create_task(self._pump())
 
+    def _track_task(self, message):
+        """Report background shells and agents Claude Code starts and ends. Returns whether message was one."""
+        from claude_agent_sdk import TaskNotificationMessage, TaskStartedMessage, TaskUpdatedMessage
+
+        if isinstance(message, TaskStartedMessage):
+            kind = "shell" if "bash" in (message.task_type or "").lower() else "agent"
+            self.emit(
+                "task", {"id": message.task_id, "state": "running", "kind": kind, "description": message.description}
+            )
+            return True
+        if isinstance(message, TaskUpdatedMessage):
+            status = message.status or (message.patch or {}).get("status")
+            if status in ("completed", "failed", "stopped", "killed"):
+                self.emit("task", {"id": message.task_id, "state": status})
+            return True
+        if isinstance(message, TaskNotificationMessage):
+            self.emit("task", {"id": message.task_id, "state": message.status, "summary": message.summary})
+            return False  # The idle reader still announces it.
+        return False
+
     def _handle(self, message, state):
         """Show one message from Claude. Returns True when it ends a turn (its ResultMessage)."""
+        if self._track_task(message):
+            return False
         from claude_agent_sdk import (
             AssistantMessage,
             RateLimitEvent,
@@ -473,6 +495,8 @@ class ClaudeSession:
             async for message in self.client.receive_messages():
                 if self.in_turn:
                     await self.inbox.put(message)
+                    continue
+                if self._track_task(message):
                     continue
                 if isinstance(message, SystemMessage):
                     if getattr(message, "subtype", "") == "task_notification" and not state:

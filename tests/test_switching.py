@@ -122,11 +122,9 @@ class ModelSwitchTests(SwitchSetup):
             codex = Provider.made[-1]
             self.assertIsInstance(codex, FakeCodex)
             handoff = codex.prompts[0]
-            self.assertIn("taking over this conversation from sonnet", handoff)
-            self.assertIn("User: remember the number 7", handoff)
-            self.assertIn("Assistant (opus): opus answered", handoff)
-            self.assertIn("User: what number did I say?", handoff)
-            self.assertIn("Assistant (sonnet): sonnet answered", handoff)
+            self.assertIn("This conversation started before you joined it", handoff)
+            self.assertIn("[plan mode, opus]\nUser: remember the number 7\nAssistant: opus answered", handoff)
+            self.assertIn("[plan mode, sonnet]\nUser: what number did I say?\nAssistant: sonnet answered", handoff)
             self.assertLess(handoff.index("</conversation>"), handoff.index("and now?"))  # History, then the request.
             self.assertTrue(claude.closed)
             self.assertNotIn(claude, self.app.sessions.values())
@@ -137,18 +135,36 @@ class ModelSwitchTests(SwitchSetup):
             await self.send(pilot, "local now")
             qwen = Provider.made[-1]
             self.assertIsInstance(qwen, FakeQwen)
-            self.assertIn("Assistant (gpt-6.1): gpt-6.1 answered", qwen.prompts[0])
+            self.assertIn("[plan mode, gpt-6.1]\nUser: and now?\nAssistant: gpt-6.1 answered", qwen.prompts[0])
             self.assertIn("User: remember the number 7", qwen.prompts[0])
 
-    async def test_solo_and_plan_are_separate_conversations(self):
+    async def test_every_mode_sees_what_the_others_did(self):
         async with self.app.run_test() as pilot:
             await pilot.pause()
             await self.send(pilot, "plan a thing")
-            self.app.selected["solo"], self.app.profiles["solo"] = "codex", dict(self.aliases["codex"])
+            planner = Provider.made[-1]
+            self.app.selected["review"], self.app.profiles["review"] = "codex", dict(self.aliases["codex"])
+            self.app.reviewer = "chosen"
+            await self.send(pilot, "/review")
+            await self.send(pilot, "check the dashboard PR")
+            reviewer = Provider.made[-1]
+            self.assertIn("[plan mode, opus]\nUser: plan a thing", reviewer.prompts[0])
+            self.app.selected["solo"], self.app.profiles["solo"] = "local", dict(self.aliases["local"])
             await self.send(pilot, "/solo")
-            await self.send(pilot, "solo question")
+            await self.send(pilot, "one sentence on what was just checked")
             solo = Provider.made[-1]
-            self.assertNotIn("plan a thing", solo.prompts[0])  # Solo is its own conversation, not the planner's.
+            self.assertIn("[review mode, gpt-6.1]\nUser: check the dashboard PR", solo.prompts[0])
+            self.assertIn("[plan mode, opus]", solo.prompts[0])
+            # Back in plan mode, the planner is told only what it missed, never its own turn again.
+            await self.send(pilot, "/plan")
+            await self.send(pilot, "carry on")
+            latest = planner.prompts[-1]
+            self.assertIn("since your last turn", latest)
+            self.assertIn("check the dashboard PR", latest)
+            self.assertIn("one sentence on what was just checked", latest)
+            self.assertNotIn("plan a thing", latest)
+            await self.send(pilot, "and again")
+            self.assertNotIn("<conversation>", planner.prompts[-1])  # Nothing new since.
 
 
 class RealCodexThroughDonutTests(SwitchSetup):
