@@ -22,6 +22,7 @@ from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
+from . import conversations
 from .config import forget_role, load, remember_role, role_choice, save
 from .highlight import Highlighter
 from .summaries import claude_context, codex_context, mcp_servers, render_mcp
@@ -164,6 +165,7 @@ COMMANDS = [
     ("/reviewer", "Choose who reviews: same as planner, any model, or off"),
     ("/soloist", "Choose the soloist's account and model"),
     ("/model", "Choose the model for the current mode"),
+    ("/resume", "Resume an earlier conversation in its mode and model"),
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
     ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
     ("/usage", "Show usage for each configured connection"),
@@ -906,9 +908,14 @@ class Donut(App):
         following = modes[(modes.index(self.permission) + 1) % len(modes)] if self.permission in modes else "ask"
         self.run_worker(self.set_permission(following), group="permission")
 
-    async def session(self, alias, profile, purpose=None):
-        """The persistent provider session for a model and purpose. Review-mode sessions are read-only."""
+    async def session(self, alias, profile, purpose=None, resume=None, conversation=None):
+        """The persistent provider session for a model and purpose. Review-mode sessions are read-only.
+
+        resume reopens a provider session or thread by its id (from /resume), replacing any open one.
+        """
         key = self.session_key(alias, profile, purpose)
+        if conversation is not None and key in self.sessions:
+            await self.sessions.pop(key).close()
         if key not in self.sessions:
             engine = profile.get("engine")
             cls = (
@@ -928,6 +935,8 @@ class Donut(App):
             session = cls(self.project, profile, emit, self.approve)
             session.permission = self.permission
             session.read_only = purpose == "review"
+            session.resume_id = resume
+            session.conversation_id = conversation
             try:
                 await session.connect()
             except BaseException:
@@ -1116,6 +1125,8 @@ class Donut(App):
                     await self.work_tickets(choice)
                 # Back to planning, so the next message is a follow-up rather than refused.
                 self.set_mode("plan")
+        elif name == "/resume":
+            await self.resume_conversation(args[0] if args else None)
         elif name == "/model":
             if self.role == "review":
                 await self.choose_reviewer()
@@ -1150,7 +1161,7 @@ class Donut(App):
             self.notify("Copied last response (terminal clipboard support required).")
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nShift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Provider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /usage · /plugin · /mcp · /context · /clear · /copy · /native · /exit\nShift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Provider plugin commands are forwarded to the selected session. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -1232,6 +1243,7 @@ class Donut(App):
         self.turn_text = ""
         await self.active.query(text)
         self.answer()
+        self.log_turn("solo", "solo", text)
 
     async def review_chat(self, text):
         """Ask the reviewer to check something, in a read-only conversation of its own."""
@@ -1241,6 +1253,86 @@ class Donut(App):
         self.turn_text = ""
         await self.active.query(REVIEW_MODE_PROMPT + text)
         self.answer()
+        self.log_turn("review", "review", text)
+
+    def log_turn(self, mode, role, text):
+        """Save this exchange so /resume can reopen the conversation in the same mode and model."""
+        session = self.active
+        if session is None:
+            return
+        try:
+            session.conversation_id = conversations.record_turn(
+                getattr(session, "conversation_id", None),
+                self.project,
+                mode,
+                role,
+                self.selected.get(role),
+                self.profiles.get(role, {}).get("model"),
+                getattr(session, "provider_id", None),
+                text,
+                self.turn_text,
+            )
+        except OSError as error:
+            self.say(f"Conversation not saved for /resume: {error}", DIM)
+
+    async def resume_conversation(self, record_id=None):
+        """Reopen an earlier conversation: switch to its mode and model, then continue the provider's session."""
+        records = conversations.for_project(self.project)
+        if not records:
+            self.say("No earlier conversations in this project yet.", DIM)
+            return
+        if record_id is None:
+            rows = [
+                (
+                    record.get("title", "(untitled)")[:56],
+                    record["id"],
+                    f"{record.get('mode', '?')} · {record.get('model') or record.get('alias')} · "
+                    f"{conversations.ago(record.get('updated'))} · {record.get('turns', 0)} turn"
+                    f"{'' if record.get('turns') == 1 else 's'}",
+                )
+                for record in records[:40]
+            ]
+            record_id = await self.choose("Resume a conversation", rows)
+            if not record_id:
+                return
+        record = next((r for r in records if r["id"] == record_id), None)
+        if record is None:
+            raise ValueError("That conversation is not in this project's history.")
+        aliases = self.config.get("aliases", {})
+        alias, role, mode = record.get("alias"), record.get("role"), record.get("mode")
+        if alias not in aliases:
+            raise ValueError(f"The account {alias} used by that conversation is no longer configured.")
+        if mode not in MODE_PLACEHOLDERS or role not in ROLE_TITLES:
+            raise ValueError("That conversation was saved in a mode this version cannot resume.")
+        profile = dict(aliases[alias])
+        if record.get("model"):
+            profile["model"] = record["model"]
+        # Match the conversation: its role's model, then its mode.
+        self.selected[role], self.profiles[role] = alias, copy.deepcopy(profile)
+        if role == "review":
+            self.reviewer = "chosen"
+        try:
+            remember_role(role, alias, profile.get("model"))
+        except (ValueError, OSError):
+            pass
+        self.sync_reviewer()
+        self.set_mode(mode)
+        purpose = mode if mode in ("solo", "review") else None
+        self.status("resuming")
+        await self.session(alias, profile, purpose, resume=record.get("provider_id"), conversation=record["id"])
+        line = Text("  Resumed", style=f"bold {ORANGE}")
+        line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
+        line.append(f" · {record.get('title', '')}", style=GRAY)
+        self.say(line)
+        if not record.get("provider_id"):
+            self.say("  The provider kept no session for it, so this continues in a fresh one.", DIM)
+        for message in record.get("messages", [])[-6:]:
+            text = " ".join(message.get("text", "").split())
+            if message.get("from") == "you":
+                self.say(Text("  > " + text[:200], style=ORANGE))
+            else:
+                self.say(Text("    " + text[:300] + ("…" if len(text) > 300 else ""), style=DIM))
+        self.say("  Continue where you left off.", DIM)
 
     async def ensure_role(self, role):
         """Entering a mode asks for its model only when none is set. Returns whether one is set now."""
@@ -1269,6 +1361,7 @@ class Donut(App):
         self.turn_text = ""
         await self.active.query(prompt)
         self.answer()
+        self.log_turn("plan", "plan", text)
         created = [path for key, path in ticket_snapshot(self.project).items() if key not in before]
         self.say("Tickets created: " + str(len(created)), CORAL)
         for path in sorted(created):

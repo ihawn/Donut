@@ -238,16 +238,19 @@ class CodexSession:
     async def query(self, text):
         approval, sandbox, reviewer = self.policy()
         if not self.thread:
-            result = await self.request(
-                "thread/start",
-                {
-                    "cwd": str(self.project),
-                    "model": self.profile.get("model") or None,
-                    "approvalPolicy": approval,
-                    "sandbox": sandbox,
-                    "approvalsReviewer": reviewer,
-                },
-            )
+            settings = {
+                "cwd": str(self.project),
+                "model": self.profile.get("model") or None,
+                "approvalPolicy": approval,
+                "sandbox": sandbox,
+                "approvalsReviewer": reviewer,
+            }
+            resume = getattr(self, "resume_id", None)
+            if resume:
+                # /resume: continue the saved thread with today's model and policies.
+                result = await self.request("thread/resume", dict(settings, threadId=resume))
+            else:
+                result = await self.request("thread/start", settings)
             self.thread = result["thread"]["id"]
             self.permission_changed = False
         params = {"threadId": self.thread, "input": [{"type": "text", "text": text}]}
@@ -259,6 +262,11 @@ class CodexSession:
         self.turn_done = asyncio.get_running_loop().create_future()
         await self.request("turn/start", params)
         await self.turn_done
+
+    @property
+    def provider_id(self):
+        """The Codex thread id, which thread/resume reopens."""
+        return self.thread
 
     async def interrupt(self):
         if self.thread:
@@ -346,6 +354,7 @@ class ClaudeSession:
             else native_permission("claude", self.permission),
             can_use_tool=permission,
             include_partial_messages=True,
+            resume=getattr(self, "resume_id", None) or None,
         )
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
@@ -367,6 +376,7 @@ class ClaudeSession:
                     elif isinstance(block, ToolUseBlock):
                         self.emit("activity", block.name)
             elif isinstance(message, ResultMessage):
+                self.session_id = getattr(message, "session_id", None) or getattr(self, "session_id", None)
                 self.usage = {"tokens": message.usage, "reported_cost_usd": message.total_cost_usd}
                 if message.is_error:
                     raise RuntimeError(message.result or "Claude turn failed")
@@ -385,6 +395,11 @@ class ClaudeSession:
 
     async def _close(self):
         await self.client.disconnect()
+
+    @property
+    def provider_id(self):
+        """The Claude Code session id, which --resume reopens."""
+        return getattr(self, "session_id", None)
 
     async def connect(self):
         self.requests = asyncio.Queue()
@@ -446,7 +461,12 @@ class QwenSession:
         self.permission = "ask"
 
     async def connect(self):
-        pass
+        self.session_id = getattr(self, "resume_id", None) or self.session_id
+
+    @property
+    def provider_id(self):
+        """The Qwen Code session id, which --resume reopens."""
+        return self.session_id
 
     async def quota(self):
         return None  # Local and OpenAI-compatible models have no plan limits to report.

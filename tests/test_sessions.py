@@ -119,3 +119,79 @@ class UsageParsingTests(unittest.TestCase):
         self.assertEqual(claude_plan_usage({"rate_limits_available": False, "rate_limits": None}), [])
         self.assertIsNone(claude_plan_usage({"rate_limits_available": True, "rate_limits": None}))
         self.assertIsNone(claude_plan_usage("unexpected"))
+
+
+class ResumePlumbingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_resumes_its_thread(self):
+        session = CodexSession(Path("."), {"model": "gpt-6.1"}, lambda *event: None, None)
+        session.resume_id = "thread-9"
+        sent = []
+
+        async def request(method, params=None):
+            sent.append((method, params))
+            if method == "thread/resume":
+                return {"thread": {"id": params["threadId"]}}
+            session.turn_done.set_result(None)
+            return {}
+
+        session.request = request
+        await asyncio.wait_for(session.query("continue"), 2)
+        self.assertEqual(sent[0][0], "thread/resume")
+        self.assertEqual(sent[0][1]["threadId"], "thread-9")
+        self.assertEqual(sent[1][1]["threadId"], "thread-9")
+        self.assertEqual(session.provider_id, "thread-9")
+
+    async def test_qwen_and_claude_resume_ids(self):
+        from unittest.mock import patch
+        from donut.sessions import QwenSession
+
+        qwen = QwenSession(Path("."), {"engine": "ollama", "model": "m"}, lambda *event: None, None)
+        qwen.resume_id = "qwen-sid"
+        await qwen.connect()
+        self.assertEqual(qwen.provider_id, "qwen-sid")
+
+        captured = {}
+
+        class Client:
+            def __init__(self, options):
+                captured["resume"] = options.resume
+
+            async def connect(self):
+                pass
+
+            async def get_server_info(self):
+                return {}
+
+            async def disconnect(self):
+                pass
+
+        claude = ClaudeSession(Path("."), {}, lambda *args: None, None)
+        claude.resume_id = "claude-sid"
+        with patch("claude_agent_sdk.ClaudeSDKClient", Client):
+            await claude.connect()
+            await claude.close()
+        self.assertEqual(captured["resume"], "claude-sid")
+
+
+class ConversationStoreTests(unittest.TestCase):
+    def test_store_keeps_recent_messages_and_is_private(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+        from donut import conversations
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": temp}):
+            record = None
+            for turn in range(10):
+                record = conversations.record_turn(
+                    record, temp, "plan", "plan", "claude", "opus", "sid", f"ask {turn}", "x" * 5000
+                )
+            saved = conversations.get(record)
+            self.assertEqual(saved["turns"], 10)
+            self.assertEqual(saved["title"], "ask 0")
+            self.assertEqual(len(saved["messages"]), conversations.KEEP_MESSAGES)
+            self.assertTrue(all(len(m["text"]) <= conversations.MESSAGE_CHARS for m in saved["messages"]))
+            if os.name != "nt":
+                self.assertEqual(conversations.store_path().stat().st_mode & 0o777, 0o600)
+            self.assertEqual(conversations.for_project(os.path.join(temp, "elsewhere")), [])
+        self.assertEqual(conversations.ago(1000, now=1000 + 7200), "2h ago")

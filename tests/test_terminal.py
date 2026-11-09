@@ -13,10 +13,13 @@ def setUpModule():
     """Saved /model, /review and permission choices go to a throwaway config folder, never the real one."""
     import os
 
-    global _config_home, _previous_config_home
+    global _config_home, _previous_config_home, _previous_state_home
     _config_home = tempfile.TemporaryDirectory()
     _previous_config_home = os.environ.get("XDG_CONFIG_HOME")
+    _previous_state_home = os.environ.get("XDG_STATE_HOME")
     os.environ["XDG_CONFIG_HOME"] = _config_home.name
+    # The /resume conversation log goes here too, never to the real state folder.
+    os.environ["XDG_STATE_HOME"] = os.path.join(_config_home.name, "state")
 
 
 def tearDownModule():
@@ -26,6 +29,10 @@ def tearDownModule():
         os.environ.pop("XDG_CONFIG_HOME", None)
     else:
         os.environ["XDG_CONFIG_HOME"] = _previous_config_home
+    if _previous_state_home is None:
+        os.environ.pop("XDG_STATE_HOME", None)
+    else:
+        os.environ["XDG_STATE_HOME"] = _previous_state_home
     _config_home.cleanup()
 
 
@@ -894,3 +901,126 @@ class PackEntriesTests(unittest.TestCase):
         packed = pack_entries(entries, 40).plain.split("\n")
         self.assertEqual(packed, ["PLAN  planner claude-opus-5-5", "reviewer claude-opus-5-5 (= planner)", "ask"])
         self.assertEqual(pack_entries(entries, 200).plain.count("\n"), 0)
+
+
+class ResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import os
+
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.state = patch.dict(os.environ, {"XDG_STATE_HOME": os.path.join(self.temp.name, "state")})
+        self.state.start()
+        self.addCleanup(self.state.stop)
+        self.config = {
+            "aliases": {
+                "claude": {"engine": "claude", "model": "claude-opus-5-5"},
+                "codex": {"engine": "codex", "model": "gpt-6.1"},
+            },
+            "planner": "claude",
+            "default_model": "codex",
+            "roles": {"solo": {"alias": "codex", "model": "gpt-6.1"}},
+        }
+        for item in (patch("donut.terminal.load", return_value=self.config), patch("donut.terminal.install")):
+            item.start()
+            self.addCleanup(item.stop)
+        self.opened = []
+
+    def make_app(self):
+        app = Donut(Path(self.temp.name))
+        counter = iter(range(1, 100))
+
+        async def session(alias, profile, purpose=None, resume=None, conversation=None):
+            fake = FakeSession(app, delay=0)
+            fake.provider_id = resume or f"provider-{next(counter)}"
+            fake.conversation_id = conversation
+            self.opened.append((alias, profile.get("model"), purpose, resume))
+            key = app.session_key(alias, profile, purpose)
+            if conversation is None and key in app.sessions:
+                return app.sessions[key]
+            app.sessions[key] = fake
+            return fake
+
+        app.session = session
+        return app
+
+    async def send(self, pilot, app, text):
+        draft = app.query_one(Draft)
+        draft.clear()
+        draft.insert(text)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+    async def test_conversations_are_saved_with_their_mode_and_model(self):
+        from donut import conversations
+
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.send(pilot, app, "plan the wall jump")
+            await self.send(pilot, app, "/solo")
+            await self.send(pilot, app, "fix the typo in README")
+            await self.send(pilot, app, "and the other one")
+        records = conversations.for_project(self.temp.name)
+        self.assertEqual(
+            [(r["mode"], r["model"], r["title"], r["turns"]) for r in records],
+            [
+                ("solo", "gpt-6.1", "fix the typo in README", 2),
+                ("plan", "claude-opus-5-5", "plan the wall jump", 1),
+            ],
+        )
+        self.assertEqual(records[0]["provider_id"], "provider-2")
+        self.assertEqual(records[0]["messages"][-2]["text"], "and the other one")
+
+    async def test_resume_switches_mode_and_model_and_reopens_the_provider_session(self):
+        from donut import conversations
+
+        first = conversations.record_turn(
+            None,
+            self.temp.name,
+            "solo",
+            "solo",
+            "claude",
+            "claude-sonnet-5-5",
+            "claude-sid",
+            "rename jump",
+            "Renamed it.",
+        )
+        conversations.record_turn(
+            None, self.temp.name, "plan", "plan", "codex", "gpt-6.1", "thread-9", "plan sounds", "Wrote 2 tickets."
+        )
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertEqual((app.mode, app.profiles["solo"]["model"]), ("plan", "gpt-6.1"))
+            app.execute("/resume")
+            await pilot.pause()
+            menu = app.query_one(Menu)
+            rows = menu.visible_rows
+            self.assertEqual([row[0] for row in rows], ["plan sounds", "rename jump"])  # Newest first.
+            self.assertTrue(rows[1][2].startswith("solo · claude-sonnet-5-5 · "))
+            self.assertTrue(rows[1][2].endswith("1 turn"))
+            await pilot.press("down", "enter")
+            await pilot.pause(0.2)
+            self.assertEqual(app.mode, "solo")
+            self.assertEqual((app.selected["solo"], app.profiles["solo"]["model"]), ("claude", "claude-sonnet-5-5"))
+            self.assertIn(("claude", "claude-sonnet-5-5", "solo", "claude-sid"), self.opened)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("Resumed · SOLO · claude-sonnet-5-5 · rename jump", body)
+            self.assertIn("> rename jump", body)
+            self.assertIn("Renamed it.", body)
+            await self.send(pilot, app, "now rename land too")
+        record = conversations.get(first)
+        self.assertEqual(record["turns"], 2)  # The resumed conversation keeps growing, not a new one.
+        from donut.config import load
+
+        self.assertEqual(load()["roles"]["solo"], {"alias": "claude", "model": "claude-sonnet-5-5"})
+
+    async def test_resume_with_nothing_saved(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.execute("/resume")
+            await pilot.pause()
+            self.assertFalse(app.query_one(Menu).is_open)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("No earlier conversations in this project yet.", body)
