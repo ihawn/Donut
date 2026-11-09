@@ -49,7 +49,7 @@ ROLE_DEFAULT_KEYS = {"plan": "planner", "work": "default_model"}
 
 
 def role_choice(config, role):
-    """(alias, profile) for "plan", "work" or "review", including a model picked with /model or /review.
+    """(alias, profile) for "plan", "work", "review" or "solo", including a model picked with /planner and the like.
 
     A choice saved under config["roles"] wins. Otherwise plan and work use their default alias, and review
     follows the planner unless config["reviewer"] is "off" or names an alias. None means nothing is configured
@@ -69,6 +69,8 @@ def role_choice(config, role):
         if reviewer in aliases:
             return reviewer, dict(aliases[reviewer])
         return role_choice(config, "plan")
+    if role not in ROLE_DEFAULT_KEYS:
+        return None  # The soloist has no default; /solo asks the first time.
     alias = config.get(ROLE_DEFAULT_KEYS[role])
     if alias in aliases:
         return alias, dict(aliases[alias])

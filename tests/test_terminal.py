@@ -633,25 +633,25 @@ class ReviewerTests(unittest.IsolatedAsyncioTestCase):
             self.fake_models(app)
             async with app.run_test() as pilot:
                 await pilot.pause()
-                self.assertIn("reviewer same as planner", str(app.query_one("#status").render()))
+                self.assertIn("reviewer claude-opus-5-5 (= planner)", str(app.query_one("#status").render()))
                 # Default: changing the planner moves the reviewer with it.
-                await self.pick(pilot, app, "/model", "claude  Sonnet 5.5")
+                await self.pick(pilot, app, "/planner", "claude  Sonnet 5.5")
                 self.assertEqual(self.roles(app), (("claude", "sonnet-5-5"), ("claude", "sonnet-5-5")))
                 # Choosing a reviewer, down to the model, leaves the planner alone.
-                await self.pick(pilot, app, "/review", "codex  Opus 5.5")
+                await self.pick(pilot, app, "/reviewer", "codex  Opus 5.5")
                 self.assertEqual(self.roles(app), (("claude", "sonnet-5-5"), ("codex", "opus-5-5")))
                 self.assertIn("reviewer opus-5-5", str(app.query_one("#status").render()))
                 # And changing the planner now leaves the chosen reviewer alone.
-                await self.pick(pilot, app, "/model", "claude  Opus 5.5")
+                await self.pick(pilot, app, "/planner", "claude  Opus 5.5")
                 self.assertEqual(self.roles(app), (("claude", "opus-5-5"), ("codex", "opus-5-5")))
                 roles, reviewer = self.saved_roles()
                 self.assertEqual(roles["plan"], {"alias": "claude", "model": "opus-5-5"})
                 self.assertEqual(roles["review"], {"alias": "codex", "model": "opus-5-5"})
-                app.execute("/review off")
+                app.execute("/reviewer off")
                 await pilot.pause()
                 self.assertIn("reviewer off", str(app.query_one("#status").render()))
                 self.assertEqual(self.saved_roles()[1], "off")
-                app.execute("/review planner")
+                app.execute("/reviewer planner")
                 await pilot.pause()
                 self.assertEqual(self.roles(app)[1], ("claude", "opus-5-5"))
                 self.assertEqual(self.saved_roles(), ({"plan": {"alias": "claude", "model": "opus-5-5"}}, None))
@@ -714,7 +714,9 @@ class ReviewerTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(turns.index(("work", "working")), turns.index(("review", "reviewing")))
 
 
-class SoloModeTests(unittest.IsolatedAsyncioTestCase):
+class ModeAndRoleTests(unittest.IsolatedAsyncioTestCase):
+    """/planner, /worker, /reviewer and /soloist pick models; /plan, /work, /review and /solo enter the mode."""
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -724,15 +726,16 @@ class SoloModeTests(unittest.IsolatedAsyncioTestCase):
                 "local": {"engine": "ollama", "model": "qwen3.6"},
             },
             "planner": "claude",
-            "default_model": "claude",  # Same alias and model as the planner, on purpose.
+            "default_model": "local",
         }
         for item in (patch("donut.terminal.load", return_value=config), patch("donut.terminal.install")):
             item.start()
             self.addCleanup(item.stop)
         self.app = Donut(Path(self.temp.name))
-        self.sessions = {}
+        self.sessions, self.purposes = {}, []
 
         async def session(alias, profile, purpose=None):
+            self.purposes.append(purpose)
             key = self.app.session_key(alias, profile, purpose)
             if key not in self.sessions:
                 fake = FakeSession(self.app, delay=0)
@@ -749,63 +752,145 @@ class SoloModeTests(unittest.IsolatedAsyncioTestCase):
         await pilot.press("enter")
         await pilot.pause(0.2)
 
-    async def test_solo_sends_messages_straight_to_the_worker(self):
+    def menu_open(self):
+        return self.app.query_one(Menu).is_open
+
+    async def test_solo_asks_for_a_soloist_once_then_talks_to_it_directly(self):
+        from donut.config import load
+
         async with self.app.run_test() as pilot:
+            self.assertEqual(self.app.profiles["solo"], {})
             await self.send(pilot, "/solo")
+            self.assertTrue(self.menu_open())  # No soloist yet, so it asks.
+            self.assertIn("soloist", self.app.query_one(Menu).border_title)
+            await pilot.press("enter")
+            await pilot.pause(0.2)
             self.assertEqual(self.app.mode, "solo")
+            self.assertEqual(self.app.profiles["solo"]["model"], "claude-sonnet-5-5")
+            self.assertEqual(self.app.profiles["work"]["model"], "qwen3.6")  # The worker is untouched.
+            self.assertEqual(load()["roles"]["solo"], {"alias": "claude", "model": "claude-sonnet-5-5"})
             status = str(self.app.query_one("#status").render())
             self.assertIn("SOLO", status)
-            self.assertIn("worker claude-opus-5-5", status)
-            self.assertNotIn("○ planner", status)
-            self.assertIn("no planner, tickets or review", status)
-            self.assertIn("Ask the worker", self.app.query_one(Draft).placeholder)
-            await self.send(pilot, "rename jump() to leap() in player.py")
-            solo = self.sessions[("claude@solo", "claude-opus-5-5")]
-            self.assertEqual(solo.calls, ["rename jump() to leap() in player.py"])  # Exactly what was typed.
-            body = "\n".join(strip.text for strip in self.app.query_one(RichLog).lines)
-            self.assertNotIn("PLANNING COMPLETE", body)
-            self.assertNotIn("Tickets created", body)
-            await self.send(pilot, "and update the tests")
-            self.assertEqual(len(solo.calls), 2)  # One ongoing conversation.
-
-    async def test_solo_and_the_planner_keep_separate_conversations(self):
-        async with self.app.run_test() as pilot:
-            await self.send(pilot, "plan a wall jump")
-            await self.send(pilot, "/solo")
-            await self.send(pilot, "just do it")
-            planner = self.sessions[("claude", "claude-opus-5-5")]
-            solo = self.sessions[("claude@solo", "claude-opus-5-5")]
-            self.assertEqual(len(planner.calls), 1)
-            self.assertIn("Plan only", planner.calls[0])
-            self.assertEqual(solo.calls, ["just do it"])
+            self.assertIn("soloist claude-sonnet-5-5", status)
+            self.assertIn("planner claude-opus-5-5", status)  # Every role stays visible in solo mode.
+            await self.send(pilot, "rename jump() to leap()")
+            self.assertEqual(self.sessions[("claude@solo", "claude-sonnet-5-5")].calls, ["rename jump() to leap()"])
             await self.send(pilot, "/plan")
             self.assertEqual(self.app.mode, "plan")
-
-    async def test_model_in_solo_changes_only_the_worker(self):
-        async with self.app.run_test() as pilot:
+            self.assertFalse(self.menu_open())  # A planner is set, so /plan does not ask.
             await self.send(pilot, "/solo")
-            self.app.execute("/model")
-            await pilot.pause()
+            self.assertFalse(self.menu_open())  # Chosen once; not asked again.
+            self.assertEqual(self.app.mode, "solo")
+
+    async def test_role_commands_only_change_their_own_role(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "/worker")
             await pilot.press("enter")
-            await pilot.pause()
+            await pilot.pause(0.2)
             self.assertEqual(self.app.profiles["work"]["model"], "claude-sonnet-5-5")
             self.assertEqual(self.app.profiles["plan"]["model"], "claude-opus-5-5")
-            from donut.config import load
+            self.assertEqual(self.app.mode, "plan")  # Picking a model does not change the mode.
+            await self.send(pilot, "/soloist local")
+            self.assertEqual(self.app.profiles["solo"]["model"], "qwen3.6")
+            self.assertEqual(self.app.profiles["work"]["model"], "claude-sonnet-5-5")
+            await self.send(pilot, "/planner local")
+            self.assertEqual(self.app.profiles["plan"]["model"], "qwen3.6")
+            self.assertEqual(self.app.profiles["solo"]["model"], "qwen3.6")
+            self.assertEqual(self.app.profiles["review"]["model"], "qwen3.6")  # The default reviewer follows.
 
-            self.assertEqual(load()["roles"]["work"], {"alias": "claude", "model": "claude-sonnet-5-5"})
+    async def test_review_mode_talks_to_the_reviewer_read_only(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "/review")
+            self.assertFalse(self.menu_open())  # The reviewer defaults to the planner, so it is set.
+            self.assertEqual(self.app.mode, "review")
+            self.assertIn("REVIEW", str(self.app.query_one("#status").render()))
+            await self.send(pilot, "check the wall jump for off-by-one errors")
+            review = self.sessions[("claude@review", "claude-opus-5-5")]
+            self.assertTrue(review.calls[0].startswith("You are the reviewer."))
+            self.assertTrue(review.calls[0].endswith("check the wall jump for off-by-one errors"))
+            self.assertIn("review", self.purposes)
 
-    async def test_f3_cycles_plan_work_and_solo(self):
+    async def test_every_role_is_shown_in_every_mode(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "/soloist local")
+            for mode in ("plan", "work", "review", "solo"):
+                self.app.set_mode(mode)
+                await pilot.pause()
+                status = str(self.app.query_one("#status").render())
+                for expected in (
+                    mode.upper(),
+                    "planner claude-opus-5-5",
+                    "worker qwen3.6",
+                    "reviewer claude-opus-5-5 (= planner)",
+                    "soloist qwen3.6",
+                ):
+                    self.assertIn(expected, status, mode)
+            await self.send(pilot, "/reviewer off")
+            self.assertIn("reviewer off", str(self.app.query_one("#status").render()))
+
+    async def test_an_unset_soloist_says_so(self):
         async with self.app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("f3")
-            await pilot.pause()
-            self.assertEqual(self.app.mode, "work")
-            await pilot.press("escape")  # Close the work picker.
-            await pilot.pause()
-            self.app.set_mode("work")
-            await pilot.press("f3")
-            await pilot.pause()
-            self.assertEqual(self.app.mode, "solo")
-            await pilot.press("f3")
-            await pilot.pause()
+            self.assertIn("soloist not set", str(self.app.query_one("#status").render()))
+
+    async def test_review_asks_for_a_reviewer_when_review_is_off(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "/reviewer off")
+            await self.send(pilot, "/review")
+            self.assertTrue(self.menu_open())
+            self.assertNotIn("off", [row[1] for row in self.app.query_one(Menu).visible_rows])
+            await pilot.press("escape")
+            await pilot.pause(0.2)
             self.assertEqual(self.app.mode, "plan")
+
+    async def test_f3_cycles_plan_work_review_and_solo(self):
+        async with self.app.run_test() as pilot:
+            await self.send(pilot, "/soloist claude")
+            for expected in ("work", "review", "solo", "plan"):
+                if self.menu_open():
+                    await pilot.press("escape")  # Close the work picker.
+                    await pilot.pause(0.1)
+                await pilot.press("f3")
+                await pilot.pause(0.2)
+                self.assertEqual(self.app.mode, expected)
+                if expected == "work":
+                    await pilot.press("escape")
+                    await pilot.pause(0.1)
+                    self.app.set_mode("work")
+
+
+class ReadOnlySessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_review_mode_sessions_are_read_only(self):
+        created = []
+
+        class Recorder:
+            def __init__(self, project, profile, emit, approve):
+                created.append(self)
+
+            async def connect(self):
+                self.connected_read_only = self.read_only
+
+        with tempfile.TemporaryDirectory() as temp:
+            config = {"aliases": {"claude": {"engine": "claude"}}, "planner": "claude"}
+            with patch("donut.terminal.load", return_value=config):
+                app = Donut(Path(temp))
+            with patch("donut.terminal.ClaudeSession", Recorder):
+                await app.session("claude", {"engine": "claude"}, "review")
+                await app.session("claude", {"engine": "claude"}, "solo")
+        self.assertEqual([session.connected_read_only for session in created], [True, False])
+
+
+class PackEntriesTests(unittest.TestCase):
+    def test_lines_break_only_between_entries(self):
+        from rich.text import Text
+        from donut.terminal import pack_entries
+
+        entries = [
+            Text("PLAN"),
+            Text("planner claude-opus-5-5"),
+            Text("reviewer claude-opus-5-5 (= planner)"),
+            Text("ask"),
+        ]
+        packed = pack_entries(entries, 40).plain.split("\n")
+        self.assertEqual(packed, ["PLAN  planner claude-opus-5-5", "reviewer claude-opus-5-5 (= planner)", "ask"])
+        self.assertEqual(pack_entries(entries, 200).plain.count("\n"), 0)

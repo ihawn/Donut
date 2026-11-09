@@ -8,9 +8,16 @@ Run `donut` in your project. The terminal supports multiline editing, paste, mou
 
 Type `/` and a command list appears inline above the prompt, the way Claude Code does it. Keep typing to filter, Up and Down move the highlight, Enter runs the highlighted command, Tab completes it so you can add arguments, and Escape closes the list. Typing a space closes it too, so `/work next 3` followed by Enter sends the whole line. Pickers such as `/model` and `/work`, and tool permission prompts, use the same inline list instead of opening a separate window.
 
-- `/plan` selects planning mode. Claude and Codex use persistent native sessions; worker tickets retain fresh contexts.
-- `/work` opens next-ticket/count/all controls; `/work next 1` runs one ticket. Append `checkpoint` (`/work next all checkpoint`) to commit the working tree after every ticket.
-- `/model` discovers models for each configured connection and lists the account alias first, including separate `claude` and `claude-personal` entries when configured. Planner and worker choices are independent. Provider changes start a distinct provider conversation.
+- **Modes and roles.** Donut has four roles, each with its own model, and a mode for each:
+
+  | Pick the model | Enter the mode | What the mode does |
+  |---|---|---|
+  | `/planner` | `/plan` | Messages go to the planner, which researches and writes tickets. |
+  | `/worker` | `/work` | Runs tickets: `/work next 1`, `/work next all`, `/work next 3 checkpoint` (a git commit after each ticket). |
+  | `/reviewer` | `/review` | Messages go to the reviewer, which reads the project and never edits it. The reviewer also checks each finished ticket during `/work`. |
+  | `/soloist` | `/solo` | Messages go to the soloist exactly as typed, like Claude Code: no planner, tickets, review or recovery. |
+
+  The picker commands list every model each configured account offers, and change only their own role. Entering a mode asks for its model only when none is set. The planner and worker come from setup, and the reviewer defaults to the same model as the planner. The soloist has no default, so the first `/solo` asks. `/reviewer` also offers "Same as planner" and Off; a chosen reviewer stays put when the planner changes. `/model` picks the model for the current mode. Every choice, alias and model, is saved and comes back next time, and `donut --plan` and `donut --work` use the saved planner, worker and reviewer. Review and solo keep conversations of their own, apart from the planner's, even on the same model; review mode runs read-only (Claude plan mode, Codex read-only sandbox, Qwen plan mode). F3 cycles plan, work, review and solo.
 - `/usage` shows each connection's available usage. Codex account rate limits are queried from its app server. Claude exposes session tokens and reported cost here; subscription quotas require native Claude `/usage`. Unavailable figures are identified explicitly.
 - `/plugin`, `/mcp`, and `/context` inspect selected-provider capabilities. Claude plugin slash commands are discovered from the native engine and can be invoked directly. Codex uses its native plugin inventory and MCP status interfaces.
 - `/native` suspends Donut and opens the selected provider's original interactive client, preserving its account/model selection. Use it for native plugin installation, provider-only built-ins, and interactions that Donut cannot yet render. Exit the client to return to Donut.
@@ -24,9 +31,6 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
   | Full access | `bypassPermissions` | `never` approvals, no sandbox | `yolo` |
 
   A live Claude session switches mode immediately when idle; Codex applies the new policy from the next turn; Qwen starts each turn with it. `/work` passes the mode to its workers. Unattended workers cannot answer prompts, so Ask runs them as Accept edits.
-- `/review` picks the model that reviews each finished ticket: the same model as the planner (the default), any account and model, or off. See [Review loop](#review-loop).
-- `/solo` talks to the worker model directly, the way you would use Claude Code: messages go to it exactly as typed, in an ongoing conversation of its own, with no planner, tickets, review or recovery. Its permission mode and inline approval prompts work as usual. `/model` in solo mode changes the worker, so switch to a stronger model there if the task needs one. `/plan` returns to planning; F3 cycles plan, work and solo.
-- `/model` changes only the role you are in (planner in plan mode, worker in work mode), and `/review` changes only the reviewer. While the reviewer is the default it follows the planner; once you choose one, changing the planner leaves it alone. All three choices, alias and model, are saved and come back next time, and `donut --plan` and `donut --work` use them too.
 - Permission prompts appear inline above the prompt with the command or file diff. Press 1 to allow once, 2 to allow that kind of action for the rest of the session, 3 or Escape to deny.
 - Messages sent while a turn is running are queued and sent when it finishes, like Claude Code. Ctrl+C cancels the turn and puts queued messages back in the prompt. Free-form messages always go to the planner, including right after `/work`.
 - `/clear` starts a fresh conversation for the selected account/model. `/copy` copies the last answer. `/exit` closes the terminal.
@@ -111,7 +115,7 @@ Each ticket gets a fresh process with no resume/continue flag. Existing in-progr
 
 ### Review loop
 
-After a worker finishes a ticket and its Verify command (if any) passes, a reviewer checks the work in a fresh context. The reviewer is the planner model unless `/review` or `--review ALIAS` picks another; `--review off` (or `/review off`) turns it off. It gets the full ticket, the list of changed files, a diff against `HEAD` and the worker's completion notes, and can read the project but not change it (Claude: Read, Grep and Glob only; Codex: read-only sandbox; Qwen: plan mode).
+After a worker finishes a ticket and its Verify command (if any) passes, a reviewer checks the work in a fresh context. The reviewer is the planner model unless `/reviewer` or `--review ALIAS` picks another; `--review off` (or `/reviewer off`) turns it off. It gets the full ticket, the list of changed files, a diff against `HEAD` and the worker's completion notes, and can read the project but not change it (Claude: Read, Grep and Glob only; Codex: read-only sandbox; Qwen: plan mode).
 
 The reviewer ends with `VERDICT: APPROVED` or `VERDICT: CHANGES REQUESTED` and numbered fixes. On approval the batch moves on. On changes requested, Donut adds the feedback to the ticket body as `## Addendum N: review feedback`, just before Completion notes so it reads as part of the requirements, moves the ticket back to `in_progress/`, and starts a fresh worker run that addresses the feedback, then reviews again. After `--review-rounds` reviews without approval (default 3) the ticket moves to `blocked/` with the last feedback, and its dependents wait. If the reviewer fails or gives no verdict, the worker's result stands and the run says so. Each review is logged as `NNN.reviewN.log`, and `results.json` records the rounds and verdict.
 

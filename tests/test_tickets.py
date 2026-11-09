@@ -217,3 +217,25 @@ class CodexPermissionTests(unittest.IsolatedAsyncioTestCase):
             {"id": 7, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}}
         )
         self.assertEqual(replies, [{"id": 7, "result": {"decision": "acceptForSession"}}])
+
+
+class ReadOnlyProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_read_only_sessions_use_each_providers_read_only_mode(self):
+        from donut.sessions import ClaudeSession, CodexSession, QwenSession
+
+        codex = CodexSession(Path("."), {}, lambda *e: None, None)
+        codex.read_only = True
+        codex.permission = "full"
+        self.assertEqual(codex.policy(), ("on-request", "read-only", "user"))
+        await codex.set_permission("full")
+        self.assertFalse(codex.permission_changed)
+        claude = ClaudeSession(Path("."), {}, lambda *e: None, None)
+        claude.read_only = True
+        await claude.set_permission("full")  # Ignored: no live switch away from plan mode.
+        qwen = QwenSession(Path("."), {"engine": "ollama", "model": "m"}, lambda *e: None, None)
+        qwen.read_only = True
+        with patch("shutil.which", return_value="/bin/qwen"):
+            args, _ = providers.command(
+                qwen.profile, "x", permission=qwen.effective_permission(), review=qwen.read_only
+            )
+        self.assertEqual(args[args.index("--approval-mode") + 1], "plan")

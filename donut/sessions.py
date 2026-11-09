@@ -118,9 +118,11 @@ class CodexSession:
     async def set_permission(self, mode):
         """Codex applies policy overrides on the next turn/start, and they persist for later turns."""
         self.permission = mode
-        self.permission_changed = bool(self.thread)
+        self.permission_changed = bool(self.thread) and not getattr(self, "read_only", False)
 
     def policy(self):
+        if getattr(self, "read_only", False):
+            return "on-request", "read-only", "user"  # Review mode: it may read and run checks, never write.
         approval, sandbox, reviewer = native_permission("codex", self.permission)
         return approval, sandbox, reviewer
 
@@ -299,6 +301,8 @@ class ClaudeSession:
     async def set_permission(self, mode):
         """Switch Claude's native permission mode in the live session (applied when it is idle)."""
         self.permission = mode
+        if getattr(self, "read_only", False):
+            return  # Review mode stays in Claude's read-only plan mode whatever the permission mode.
         if getattr(self, "owner", None) and not self.owner.done():
             await self._call("set_permission", mode)
 
@@ -337,7 +341,9 @@ class ClaudeSession:
             env=env,
             model=self.profile.get("model") or None,
             setting_sources=["user", "project", "local"],
-            permission_mode=native_permission("claude", self.permission),
+            permission_mode="plan"
+            if getattr(self, "read_only", False)
+            else native_permission("claude", self.permission),
             can_use_tool=permission,
             include_partial_messages=True,
         )
@@ -457,7 +463,9 @@ class QwenSession:
         from .providers import command, activate
 
         await asyncio.to_thread(activate, self.profile)
-        args, env = command(self.profile, text, permission=self.effective_permission())
+        args, env = command(
+            self.profile, text, permission=self.effective_permission(), review=getattr(self, "read_only", False)
+        )
         if self.session_id:
             args += ["--resume", self.session_id]
         self.process = await asyncio.create_subprocess_exec(
