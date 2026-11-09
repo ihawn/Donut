@@ -43,3 +43,54 @@ def save(config):
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+
+
+ROLE_DEFAULT_KEYS = {"plan": "planner", "work": "default_model"}
+
+
+def role_choice(config, role):
+    """(alias, profile) for "plan", "work" or "review", including a model picked with /model or /review.
+
+    A choice saved under config["roles"] wins. Otherwise plan and work use their default alias, and review
+    follows the planner unless config["reviewer"] is "off" or names an alias. None means nothing is configured
+    (or review is off).
+    """
+    aliases = config.get("aliases", {})
+    saved = (config.get("roles") or {}).get(role)
+    if isinstance(saved, dict) and saved.get("alias") in aliases:
+        profile = dict(aliases[saved["alias"]])
+        if saved.get("model"):
+            profile["model"] = saved["model"]
+        return saved["alias"], profile
+    if role == "review":
+        reviewer = config.get("reviewer")
+        if reviewer == "off":
+            return None
+        if reviewer in aliases:
+            return reviewer, dict(aliases[reviewer])
+        return role_choice(config, "plan")
+    alias = config.get(ROLE_DEFAULT_KEYS[role])
+    if alias in aliases:
+        return alias, dict(aliases[alias])
+    return None
+
+
+def remember_role(role, alias, model):
+    """Save which alias and model a role uses, so /model and /review choices stick across restarts."""
+    config = load()
+    config.setdefault("roles", {})[role] = {"alias": alias, "model": model or ""}
+    if role == "review":
+        config.pop("reviewer", None)
+    save(config)
+
+
+def forget_role(role, reviewer=None):
+    """Drop a saved role choice. For review, reviewer="off" turns review off; None makes it follow the planner."""
+    config = load()
+    (config.get("roles") or {}).pop(role, None)
+    if role == "review":
+        if reviewer == "off":
+            config["reviewer"] = "off"
+        else:
+            config.pop("reviewer", None)
+    save(config)

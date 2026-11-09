@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from .config import load
+from .config import load, role_choice
 from .install_skills import install
 from .providers import validate, activate
 from .runner import run_agent, run_batch
@@ -190,27 +190,38 @@ def main():
             if not config["aliases"]:
                 print("No aliases yet. Run donut setup.")
             return 0
-        alias = getattr(args, "model", None) or config.get("planner" if args.action == "plan" else "default_model")
-        if alias not in config["aliases"]:
-            raise ValueError("Choose a configured alias with -m, or run donut setup.")
-        profile = config["aliases"][alias]
+        role = "plan" if args.action == "plan" else "work"
+        if getattr(args, "model", None):
+            alias = args.model
+            if alias not in config["aliases"]:
+                raise ValueError("Choose a configured alias with -m, or run donut setup.")
+            profile = config["aliases"][alias]
+        else:
+            # The alias and model last picked with /model in the terminal, or the role's default alias.
+            chosen = role_choice(config, role)
+            if not chosen:
+                raise ValueError("Choose a configured alias with -m, or run donut setup.")
+            alias, profile = chosen
         validate(profile)
         banner()
         if args.action == "do":
-            reviewer = None
-            choice = args.review or config.get("reviewer") or config.get("planner")
-            if choice and choice != "off":
-                if choice not in config["aliases"]:
-                    raise ValueError(f"Unknown reviewer alias: {choice}. Use --review ALIAS or --review off.")
-                reviewer = config["aliases"][choice]
-                validate(reviewer)
-            planner = None
-            fixer = args.recover or config.get("recovery") or config.get("planner")
-            if fixer and fixer != "off":
-                if fixer not in config["aliases"]:
-                    raise ValueError(f"Unknown recovery alias: {fixer}. Use --recover ALIAS or --recover off.")
-                planner = config["aliases"][fixer]
-                validate(planner)
+
+            def resolve(flag, saved_role, name):
+                """An explicit alias or off, else the saved choice for the role."""
+                if flag == "off":
+                    return None
+                if flag:
+                    if flag not in config["aliases"]:
+                        raise ValueError(f"Unknown {name} alias: {flag}. Use --{name} ALIAS or --{name} off.")
+                    return config["aliases"][flag]
+                chosen = role_choice(config, saved_role)
+                return chosen[1] if chosen else None
+
+            reviewer = resolve(args.review, "review", "review")
+            planner = resolve(args.recover or config.get("recovery"), "plan", "recover")
+            for chosen in (reviewer, planner):
+                if chosen:
+                    validate(chosen)
             if args.review_rounds < 1:
                 raise ValueError("--review-rounds must be at least 1")
             return run_batch(

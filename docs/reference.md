@@ -24,7 +24,9 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
   | Full access | `bypassPermissions` | `never` approvals, no sandbox | `yolo` |
 
   A live Claude session switches mode immediately when idle; Codex applies the new policy from the next turn; Qwen starts each turn with it. `/work` passes the mode to its workers. Unattended workers cannot answer prompts, so Ask runs them as Accept edits.
-- `/review` picks the model that reviews each finished ticket: the planner (the default), any configured alias, or off. The choice is saved. See [Review loop](#review-loop).
+- `/review` picks the model that reviews each finished ticket: the same model as the planner (the default), any account and model, or off. See [Review loop](#review-loop).
+- `/solo` talks to the worker model directly, the way you would use Claude Code: messages go to it exactly as typed, in an ongoing conversation of its own, with no planner, tickets, review or recovery. Its permission mode and inline approval prompts work as usual. `/model` in solo mode changes the worker, so switch to a stronger model there if the task needs one. `/plan` returns to planning; F3 cycles plan, work and solo.
+- `/model` changes only the role you are in (planner in plan mode, worker in work mode), and `/review` changes only the reviewer. While the reviewer is the default it follows the planner; once you choose one, changing the planner leaves it alone. All three choices, alias and model, are saved and come back next time, and `donut --plan` and `donut --work` use them too.
 - Permission prompts appear inline above the prompt with the command or file diff. Press 1 to allow once, 2 to allow that kind of action for the rest of the session, 3 or Escape to deny.
 - Messages sent while a turn is running are queued and sent when it finishes, like Claude Code. Ctrl+C cancels the turn and puts queued messages back in the prompt. Free-form messages always go to the planner, including right after `/work`.
 - `/clear` starts a fresh conversation for the selected account/model. `/copy` copies the last answer. `/exit` closes the terminal.
