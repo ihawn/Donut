@@ -1374,6 +1374,13 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((Path(self.temp.name) / ".donut" / "fix-login-bug" / "to_do").is_dir())
             self.assertFalse((Path(self.temp.name) / ".donut" / first).exists())
             self.assertEqual(conversations.for_project(self.temp.name)[0]["session"], "fix-login-bug")
+            # /resume lists the conversation by its new name, with its first message beside it.
+            await self.send(pilot, app, "/resume")
+            row = app.query_one(Menu).visible_rows[0]
+            self.assertEqual(row[0], "fix login bug")
+            self.assertTrue(row[2].startswith("plan the wall jump · plan · "))
+            await pilot.press("escape")
+            await pilot.pause()
             # The soloist is Codex, which has no /rename: Donut names the folder itself.
             await self.send(pilot, app, "/solo")
             await self.send(pilot, app, "/rename Wall jump: v2")

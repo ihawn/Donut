@@ -73,6 +73,18 @@ def record_turn(record_id, project, mode, role, alias, model, provider_id, user_
     record.update(mode=mode, role=role, alias=alias, model=model or "", updated=now)
     if session:
         record["session"] = session  # The tickets folder, .donut/<session>/, that /resume switches back to.
+        if "name" not in record:
+            # A conversation started in a renamed session is listed under that session's name too.
+            named = next(
+                (
+                    r.get("name")
+                    for r in records
+                    if r.get("project") == record["project"] and r.get("session") == session and r.get("name")
+                ),
+                None,
+            )
+            if named:
+                record["name"] = named
     if provider_id:
         record["provider_id"] = provider_id
     record["turns"] = record.get("turns", 0) + 1
@@ -133,14 +145,19 @@ def recent_projects():
     return ordered
 
 
-def rename_session(project, old, new):
-    """Point this project's saved conversations at a renamed tickets folder, so /resume still finds it."""
+def rename_session(project, old, new, name=None):
+    """Point this project's saved conversations at a renamed session: its tickets folder and the name /resume
+    shows for them (the name as typed, such as "fix login bug", where the folder is fix-login-bug)."""
+    if not old:
+        return  # Conversations from before sessions have none to follow.
     project = str(Path(project).resolve())
     records = load_all()
     changed = False
     for record in records:
         if record.get("project") == project and record.get("session") == old:
             record["session"] = new
+            if name:
+                record["name"] = name
             changed = True
     if changed:
         _write(records)

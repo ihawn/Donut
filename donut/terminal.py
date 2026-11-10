@@ -2068,7 +2068,7 @@ class Donut(App):
             return
         self.session_name = new
         try:
-            conversations.rename_session(self.project, old, new)
+            conversations.rename_session(self.project, old, new, " ".join(name.split())[:80])
         except OSError:
             pass
         self.say(Text(f"  Tickets folder · {workspace.relative(self.project, self.lanes)}", style=f"bold {ORANGE}"))
@@ -2145,9 +2145,10 @@ class Donut(App):
         if record_id is None:
             rows = [
                 (
-                    record.get("title", "(untitled)")[:56],
+                    (record.get("name") or record.get("title", "(untitled)"))[:56],
                     record["id"],
-                    f"{record.get('mode', '?')} · {record.get('model') or record.get('alias')} · "
+                    (f"{record.get('title', '')[:40]} · " if record.get("name") else "")
+                    + f"{record.get('mode', '?')} · {record.get('model') or record.get('alias')} · "
                     f"{conversations.ago(record.get('updated'))} · {record.get('turns', 0)} turn"
                     f"{'' if record.get('turns') == 1 else 's'}",
                 )
@@ -2200,7 +2201,7 @@ class Donut(App):
         resumed.donut_seen = len(self.exchanges)
         line = Text("  Resumed", style=f"bold {ORANGE}")
         line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
-        line.append(f" · {record.get('title', '')}", style=GRAY)
+        line.append(f" · {record.get('name') or record.get('title', '')}", style=GRAY)
         line.append(f" · tickets {workspace.relative(self.project, self.lanes)}", style=DIM)
         self.say(line)
         if not record.get("provider_id"):
