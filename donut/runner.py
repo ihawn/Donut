@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run swim-lane tickets in isolated coding-agent sessions."""
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,7 @@ import threading
 from . import checkpoints
 from .install_skills import worker_skill
 from .providers import command, activate
-from .platform import acquire_lock, process_options, stop_process
+from .platform import process_options, stop_process
 from .tickets import Ticket, pick, queue_report, tasks  # noqa: F401  (pick and tasks are part of the module API)
 from .tickets import load as load_tickets
 from .ui import Progress, paint, CodeStream
@@ -480,8 +479,6 @@ def run_batch(
         raise ValueError(f"{project} is not a git repository; --checkpoint needs one (run git init)")
     cache = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut"
     cache.mkdir(parents=True, exist_ok=True)
-    # The handle must stay referenced for the whole batch; the lock is released when it is closed.
-    _lock = acquire_lock(cache / (hashlib.sha256(str(project).encode()).hexdigest() + ".lock"))
     run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=cache))
     print(
         f"Project: {project}\nTickets: {relative(project, lanes)}\nModel: {profile.get('model') or profile['engine']}\nRun logs: {run_dir}",
