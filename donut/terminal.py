@@ -1428,6 +1428,13 @@ class Donut(App):
         self.welcome()
         self.say(Text("  New conversation. Existing tickets are kept.", style=GRAY))
 
+    def watch_app_focus(self, focus):
+        """Only the window in front blinks its cursor; the others hold it steady until they are active again."""
+        try:
+            self.query_one(Draft).cursor_blink = focus
+        except NoMatches:
+            pass
+
     def on_click(self, event):
         """Open a link under the mouse. Terminals also open these hyperlinks with Cmd- or Ctrl-click."""
         try:

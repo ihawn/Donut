@@ -1425,6 +1425,21 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body.count("Background shell completed  Poll the build"), 1)
             self.assertIn("Background agent killed  Explore", body)
 
+    async def test_the_cursor_blinks_only_in_the_active_window(self):
+        from textual import events
+
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            draft = app.query_one(Draft)
+            self.assertTrue(draft.cursor_blink)
+            app.post_message(events.AppBlur())  # The terminal reports another window came to the front.
+            await pilot.pause()
+            self.assertFalse(draft.cursor_blink)
+            app.post_message(events.AppFocus())
+            await pilot.pause()
+            self.assertTrue(draft.cursor_blink)
+
     async def test_resume_with_nothing_saved(self):
         app = self.make_app()
         async with app.run_test() as pilot:
