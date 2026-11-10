@@ -86,6 +86,25 @@ def mcp_servers(data):
     return rows
 
 
+def parse_mcp_list(text):
+    """[(name, status)] from `claude mcp list`, whose lines read "name: address - ✓ Connected".
+
+    Names can hold colons (plugin:postman:postman) but never ": ", so the first ": " ends the name.
+    """
+    servers = []
+    for line in (text or "").splitlines():
+        if ": " not in line or " - " not in line:
+            continue
+        name, rest = line.split(": ", 1)
+        status = rest.rsplit(" - ", 1)[1].strip()
+        servers.append((name.strip(), status))
+    return servers
+
+
+def is_connected(status):
+    return "connected" in status.lower() and "fail" not in status.lower() and "not" not in status.lower()
+
+
 def render_mcp(servers, provider):
     """Lines for the transcript: a one-line tally, then one line per server."""
     if not servers:

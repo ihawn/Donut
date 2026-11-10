@@ -26,7 +26,7 @@ from textual.widgets.option_list import Option
 from . import conversations
 from .config import forget_role, load, remember_role, role_choice, save
 from .highlight import Highlighter
-from .summaries import claude_context, codex_context, mcp_servers, render_mcp
+from .summaries import claude_context, codex_context, is_connected, mcp_servers, parse_mcp_list, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
@@ -1711,8 +1711,7 @@ class Donut(App):
                 if name == "/plugin":
                     data = session.info.get("commands", [])
                 elif name == "/mcp":
-                    for line in render_mcp(mcp_servers(await session.client.get_mcp_status()), provider):
-                        self.say(line)
+                    await self.claude_mcp(session, provider)
                     return
                 else:
                     for line in claude_context(await session.client.get_context_usage()):
@@ -2311,6 +2310,83 @@ class Donut(App):
         line.append(f"  {name}, {ROLE_TITLES[role]}", style=DIM)
         self.say(line)
         self.status()
+
+    async def configured_mcp(self, profile):
+        """What `claude mcp list` reports for this login: every server it is set up with, claude.ai connectors
+        included, whether or not the running session loaded them."""
+        env = dict(os.environ)
+        if profile.get("claude_config_dir"):
+            env["CLAUDE_CONFIG_DIR"] = str(Path(profile["claude_config_dir"]).expanduser())
+        try:
+            process = await asyncio.create_subprocess_exec(
+                shutil.which("claude") or "claude",
+                "mcp",
+                "list",
+                cwd=self.project,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            output, _ = await asyncio.wait_for(process.communicate(), 90)
+        except (OSError, asyncio.TimeoutError):
+            return []
+        return parse_mcp_list(output.decode("utf-8", errors="replace"))
+
+    async def claude_mcp(self, session, provider):
+        """/mcp for Claude: the session's servers, and any the login has that the session started without.
+
+        A running Claude session never picks up a server connected after it started, such as a claude.ai
+        connector added since. When one is missing, Donut reopens the session on the same conversation so the
+        new process loads it.
+        """
+        self.status("checking MCP servers")
+        live = mcp_servers(await session.client.get_mcp_status())
+        key = next((k for k, v in self.sessions.items() if v is session), None)
+        configured = await self.configured_mcp(self.session_profiles.get(key, self.profiles.get(self.role, {})))
+        loaded = {server["name"] for server in live}
+        missing = [(name, status) for name, status in configured if name not in loaded]
+        ready = [name for name, status in missing if is_connected(status)]
+        if ready and self.active is None:
+            self.say(
+                Text(
+                    f"  {', '.join(ready)} connected after this session started; reopening it on the same "
+                    "conversation to load them.",
+                    style=DIM,
+                )
+            )
+            session = await self.reopen(session)
+            live = mcp_servers(await session.client.get_mcp_status())
+            loaded = {server["name"] for server in live}
+            missing = [(name, status) for name, status in configured if name not in loaded]
+        for line in render_mcp(live, provider):
+            self.say(line)
+        if missing:
+            self.say(Text("  Set up for this login but not in this session:", style=GRAY))
+            for name, status in missing:
+                self.say(Text(f"    ○ {name}  {status}", style=DIM))
+            if any(is_connected(status) for _, status in missing):
+                self.say(Text("  Run /mcp again when the current turn ends to load them.", style=DIM))
+
+    async def reopen(self, session):
+        """Restart a Claude session's process on the same conversation, keeping Donut's own bookkeeping."""
+        key = next(k for k, v in self.sessions.items() if v is session)
+        alias_part, _ = key
+        alias, _, purpose = alias_part.partition("@")
+        profile = self.session_profiles.get(key, {})
+        fresh = await self.session(
+            alias,
+            profile,
+            purpose or None,
+            resume=getattr(session, "provider_id", None),
+            conversation=getattr(session, "conversation_id", None) or "",
+        )
+        fresh.conversation_id = getattr(session, "conversation_id", None)  # The same /resume record.
+        fresh.donut_seen = getattr(session, "donut_seen", 0)
+        fresh.task = getattr(session, "task", None) or getattr(fresh, "task", None)
+        for entry in self.exchanges:
+            if entry["by"] is session:
+                entry["by"] = fresh  # Its own turns stay its own: they are in the resumed provider session.
+        return fresh
 
     async def choose_reviewer(self, choice=None, allow_off=True):
         """Pick who reviews each finished ticket: the planner (default), any account and model, or off.
