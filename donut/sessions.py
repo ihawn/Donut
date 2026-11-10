@@ -434,6 +434,9 @@ class ClaudeSession:
             include_partial_messages=True,
             resume=getattr(self, "resume_id", None) or None,
             effort=self.profile.get("effort") or None,
+            # Lets /permissions or Shift+Tab switch this live session to Full access later. It bypasses
+            # nothing by itself; review sessions stay read-only and never get it.
+            extra_args={} if getattr(self, "read_only", False) else {"allow-dangerously-skip-permissions": None},
         )
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
