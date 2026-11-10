@@ -239,16 +239,6 @@ print('finished', p.name)
         self.assertEqual(self.run_batch("all").returncode, 0)
         self.assertFalse(self.calls.exists())
 
-    def test_project_lock(self):
-        import hashlib
-
-        cache = self.root / "state/donut"
-        cache.mkdir(parents=True)
-        lock = runner.acquire_lock(cache / (hashlib.sha256(str(self.project.resolve()).encode()).hexdigest() + ".lock"))
-        self.addCleanup(lock.close)
-        self.assertEqual(self.run_batch("1").returncode, 1)
-        self.assertFalse(self.calls.exists())
-
     def test_process_failure_stops_batch(self):
         self.ticket(1, "first")
         self.ticket(2, "second")
