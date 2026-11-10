@@ -167,6 +167,62 @@ class ModelSwitchTests(SwitchSetup):
             self.assertNotIn("<conversation>", planner.prompts[-1])  # Nothing new since.
 
 
+class McpReloadTests(SwitchSetup):
+    async def test_mcp_reopens_a_session_that_started_without_a_connector(self):
+        from donut.summaries import parse_mcp_list
+        from donut.terminal import RichLog
+
+        listing = (
+            "Checking MCP server health…\n\n"
+            "plugin:postman:postman: https://mcp.example.com/mcp (HTTP) - ! Needs authentication\n"
+            "claude.ai Notes: https://notes.example.com/mcp (HTTP) - \u2713 Connected\n"
+        )
+        self.assertEqual(
+            parse_mcp_list(listing),
+            [("plugin:postman:postman", "! Needs authentication"), ("claude.ai Notes", "\u2713 Connected")],
+        )
+        app = self.app
+
+        class Client:
+            def __init__(client, servers):
+                client.servers = servers
+
+            async def get_mcp_status(client):
+                return {"mcpServers": [{"name": name, "status": status} for name, status in client.servers]}
+
+        made = []
+        original = Provider.__init__
+
+        def init(provider, project, profile, emit, approve):
+            original(provider, project, profile, emit, approve)
+            # The first process started before the connector was connected; a new one loads it.
+            servers = [("plugin:postman:postman", "needs-auth")]
+            if made:
+                servers.append(("claude.ai Notes", "connected"))
+            provider.client = Client(servers)
+            provider.provider_id = "sid-1"
+            made.append(provider)
+
+        async def configured(profile):
+            return parse_mcp_list(listing)
+
+        with patch.object(Provider, "__init__", init), patch.object(app, "configured_mcp", configured):
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await self.send(pilot, "remember the number 7")
+                first = made[-1]
+                await self.send(pilot, "/mcp")
+                body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+        self.assertEqual(len(made), 2)
+        self.assertTrue(first.closed)
+        self.assertIn("claude.ai Notes connected after this session started", body)
+        self.assertIn("claude.ai Notes", body.split("MCP servers")[-1])
+        self.assertNotIn("not in this session", body)
+        fresh = made[-1]
+        self.assertIn(fresh, app.sessions.values())
+        self.assertEqual(getattr(fresh, "resume_id", None), "sid-1")  # The same conversation, reopened.
+
+
 class RealCodexThroughDonutTests(SwitchSetup):
     async def test_a_codex_reviewer_starts_its_own_thread(self):
         """Donut's own bookkeeping must never touch the Codex thread id (it once set .thread to "review")."""
