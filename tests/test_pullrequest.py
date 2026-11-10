@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from donut import pullrequest, runner
+from donut import checkpoints, pullrequest, runner
 
 
 def git(cwd, *args):
@@ -35,6 +35,62 @@ class RuleTests(unittest.TestCase):
             pullrequest.parse_description(text), ("Add rate limiting to the API", "## Summary\nLimits each key.")
         )
         self.assertEqual(pullrequest.parse_description("no title here"), (None, ""))
+
+
+class MultiRepositoryTests(unittest.TestCase):
+    def test_the_planner_answer_splits_by_repository(self):
+        text = "REPO: api\nTITLE: Add the endpoint\n\nAPI body.\n\nREPO: web\nTITLE: Call the endpoint\n\nWeb body.\n"
+        self.assertEqual(
+            pullrequest.parse_descriptions(text, ["api", "web"]),
+            {"api": ("Add the endpoint", "API body."), "web": ("Call the endpoint", "Web body.")},
+        )
+        # One description with no REPO lines serves every repository.
+        self.assertEqual(pullrequest.parse_descriptions("TITLE: T\n\nB", ["api"]), {"api": ("T", "B")})
+        prompt = pullrequest.describe_prompt([record("001_a.md")], [{"name": "api", "files": ["x.py"]}] * 2)
+        self.assertIn("each gets its own pull request", prompt)
+
+    def test_files_group_by_repository_and_checkpoints_commit_each(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env = {"GIT_CONFIG_GLOBAL": str(root / "gitconfig"), "GIT_CONFIG_SYSTEM": str(root / "none")}
+            (root / "gitconfig").write_text("[user]\n\tname = T\n\temail = t@example.com\n")
+            workspace = root / "workspace"
+            with patch.dict(os.environ, env):
+                for name in ("api", "web"):
+                    (workspace / name).mkdir(parents=True)
+                    git(workspace / name, "init", "-q")
+                    (workspace / name / "a.txt").write_text("1\n")
+                (workspace / "notes.md").write_text("not in any repository\n")
+                self.assertFalse(checkpoints.is_repository(workspace))
+                self.assertEqual(checkpoints.changed_files(workspace), ["api/a.txt", "web/a.txt"])
+                groups = checkpoints.group(workspace, ["api/a.txt", "web/a.txt"])
+                self.assertEqual([(p, f) for _, p, f in groups], [("api/", ["a.txt"]), ("web/", ["a.txt"])])
+                self.assertEqual(len(checkpoints.commit(workspace, "donut: done 001_a.md").split(", ")), 2)
+                self.assertEqual(checkpoints.changed_files(workspace), [])
+                git(workspace / "api", "remote", "add", "origin", str(root / "api.git"))
+                (workspace / "api" / "a.txt").write_text("2\n")
+                (workspace / "web" / "a.txt").write_text("2\n")
+                found, skipped = pullrequest.targets(workspace, checkpoints.changed_files(workspace))
+                self.assertEqual([(t["name"], t["files"]) for t in found], [("api", ["a.txt"])])
+                self.assertEqual(skipped, [("web", "no origin remote to push to")])
+
+    def test_a_repository_inside_a_repository_stays_separate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env = {"GIT_CONFIG_GLOBAL": str(root / "gitconfig"), "GIT_CONFIG_SYSTEM": str(root / "none")}
+            (root / "gitconfig").write_text("[user]\n\tname = T\n\temail = t@example.com\n")
+            with patch.dict(os.environ, env):
+                root = root / "project"
+                root.mkdir()
+                git(root, "init", "-q")
+                (root / "libs" / "shared").mkdir(parents=True)
+                git(root / "libs" / "shared", "init", "-q")
+                (root / "app.py").write_text("1\n")
+                (root / "libs" / "shared" / "util.py").write_text("1\n")
+                self.assertEqual(checkpoints.changed_files(root), ["app.py", "libs/shared/util.py"])
+                checkpoints.commit(root, "checkpoint")
+                # The outer repository did not swallow the inner one.
+                self.assertEqual(git(root, "show", "--name-only", "--format=", "HEAD").split(), ["app.py"])
 
 
 class GitTests(unittest.TestCase):
@@ -105,19 +161,27 @@ class RunnerTests(unittest.TestCase):
                 return 0
 
             planner, reviewer = {"engine": "claude", "model": "opus"}, {"engine": "codex"}
+            target = {"name": "project", "root": Path(temp), "files": ["a.py"]}
             with (
                 patch("donut.runner.run_agent", side_effect=planner_writes),
+                patch("donut.runner.pullrequest.targets", return_value=([target], [])),
                 patch("donut.runner.pullrequest.raise_pull_request", return_value="https://x/pull/1") as raised,
             ):
-                url = runner.open_pull_request(
+                urls = runner.open_pull_request(
                     planner, reviewer, Path(temp), [record("001_a.md", files=["a.py"])], run_dir
                 )
-                self.assertEqual(url, "https://x/pull/1")
+                self.assertEqual(urls, ["https://x/pull/1"])
                 raised.assert_called_with(Path(temp), "Add the thing", "Body.", ["a.py"])
                 raised.reset_mock()
                 blocked = [record("001_a.md", status="Blocked")]
-                self.assertIsNone(runner.open_pull_request(planner, reviewer, Path(temp), blocked, run_dir))
-                self.assertIsNone(runner.open_pull_request(planner, None, Path(temp), [record("001_a.md")], run_dir))
+                self.assertEqual(runner.open_pull_request(planner, reviewer, Path(temp), blocked, run_dir), [])
+                self.assertEqual(runner.open_pull_request(planner, None, Path(temp), [record("001_a.md")], run_dir), [])
+                # Only ticket files changed: nothing to raise.
+                lanes = Path(temp) / ".donut" / "s1"
+                only_tickets = [record("001_a.md", files=[".donut/s1/done/001_a.md"])]
+                self.assertEqual(
+                    runner.open_pull_request(planner, reviewer, Path(temp), only_tickets, run_dir, lanes), []
+                )
                 raised.assert_not_called()
 
 

@@ -467,31 +467,50 @@ def repair_queue(planner, worker, project, broken, run_dir, lanes=None):
     )
 
 
-def open_pull_request(planner, reviewer, project, records, run_dir):
-    """After an approved run, the planner writes the pull request and Donut opens it. Returns its URL or None."""
+def open_pull_request(planner, reviewer, project, records, run_dir, lanes=None):
+    """After an approved run, the planner writes a pull request for each repository the tickets changed and Donut
+    opens them. Returns their URLs (empty when none applied or none could be opened)."""
     if not reviewer or not planner:
-        return None  # Only reviewer-approved work becomes a pull request.
+        return []  # Only reviewer-approved work becomes a pull request.
     ok, reason = pullrequest.approved(records)
     if not ok:
         print(paint(f"Pull request: not raised; {reason}.", "orange"), flush=True)
-        return None
-    files = pullrequest.files_changed(records)
-    print(f"\n[pull request] {planner.get('model') or planner['engine']} writes it", flush=True)
+        return []
+    exclude = [relative(project, lanes)] if lanes else []
+    files = pullrequest.files_changed(records, exclude)
+    if not files:
+        print(paint("Pull request: not needed; the tickets changed no files in a git repository.", "orange"))
+        return []
+    repos, skipped = pullrequest.targets(project, files)
+    for name, why in skipped:
+        print(paint(f"Pull request: none for {name}; {why}. Its changes stay in the working tree.", "orange"))
+    if not repos:
+        return []
+    several = f" ({len(repos)} repositories)" if len(repos) > 1 else ""
+    print(f"\n[pull request] {planner.get('model') or planner['engine']} writes it{several}", flush=True)
     if planner["engine"] == "ollama":
         activate(planner)
     log = run_dir / "pull_request.log"
-    run_agent(planner, project, pullrequest.describe_prompt(records, files), log, summary=True)
-    title, body = pullrequest.parse_description(tail(log, 20000))
-    if not title:
-        print(paint("Pull request: not raised; the planner gave no title.", "orange"), flush=True)
-        return None
-    try:
-        url = pullrequest.raise_pull_request(project, title, body, files)
-    except (ValueError, OSError) as error:
-        print(paint(f"Pull request: not raised; {error}. The work stays in your working tree.", "orange"))
-        return None
-    print(paint(f"Pull request: {url}", "teal"), flush=True)
-    return url
+    run_agent(planner, project, pullrequest.describe_prompt(records, repos), log, summary=True)
+    written = pullrequest.parse_descriptions(tail(log, 40000), [repo["name"] for repo in repos])
+    opened = []
+    for repo in repos:
+        title, body = written.get(repo["name"], (None, ""))
+        if not title:
+            print(paint(f"Pull request: none for {repo['name']}; the planner gave no title.", "orange"), flush=True)
+            continue
+        try:
+            url = pullrequest.raise_pull_request(repo["root"], title, body, repo["files"])
+        except (ValueError, OSError) as error:
+            print(
+                paint(f"Pull request: none for {repo['name']}; {error}. The work stays in your working tree.", "orange")
+            )
+            continue
+        label = f" ({repo['name']})" if len(repos) > 1 else ""
+        print(paint(f"Pull request{label}: {url}", "teal"), flush=True)
+        opened.append((repo["root"], url, body))
+    pullrequest.link(project, opened)
+    return [url for _, url, _ in opened]
 
 
 def run_batch(
@@ -512,7 +531,7 @@ def run_batch(
     for lane in ("to_do", "in_progress", "done"):
         if not (lanes / lane).is_dir():
             raise ValueError(f"{project}: missing {relative(project, lanes)}{lane}; run donut init")
-    if checkpoint and not checkpoints.is_repository(project):
+    if checkpoint and not checkpoints.repositories(project):
         raise ValueError(f"{project} is not a git repository; --checkpoint needs one (run git init)")
     cache = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut"
     cache.mkdir(parents=True, exist_ok=True)
@@ -681,10 +700,10 @@ def run_batch(
         else:
             print("No eligible tickets to run.")
         if pull_request and records:
-            url = open_pull_request(planner, reviewer, project, records, run_dir)
-            if url:
+            urls = open_pull_request(planner, reviewer, project, records, run_dir, lanes)
+            if urls:
                 for record in records:
-                    record["pull_request"] = url
+                    record["pull_requests"] = urls
                 (run_dir / "results.json").write_text(json.dumps(records, indent=2))
         if profile["engine"] == "ollama":
             activate(profile)
