@@ -187,7 +187,7 @@ python3 -m venv .venv && .venv/bin/pip install -e . ruff
 python3 scripts/check_provider_flags.py     # needs the real provider CLIs on PATH
 ```
 
-Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, verify commands, checkpoints, process errors, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction. `ruff` enforces formatting and basic lint in CI.
+Tests use fake agent executables and temporary projects; no credentials or paid model calls are needed. They cover dependency ordering, blocked tasks, verify commands, checkpoints, process errors, fresh invocations, output rendering, setup, model discovery, instruction preservation, credential boundaries and provider command construction. CI fails only on errors that break the code (`ruff check --select E9,F63,F7,F82`); style and formatting are left to the local `ruff` commands above.
 
 Because the unit tests never touch a real provider, `scripts/check_provider_flags.py` installs nothing but checks that every flag Donut passes to `codex`, `claude` and `qwen` is still documented by the installed CLI. The [Provider contract](https://github.com/ihawn/Donut/actions/workflows/provider_contract.yml) workflow runs it weekly, on demand, and on pull requests that touch `providers.py`, with the current npm releases of all three CLIs. It never blocks a release.
 
