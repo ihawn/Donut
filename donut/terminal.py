@@ -278,6 +278,7 @@ COMMANDS = [
     ("/clear", "Start completely fresh: new conversation, empty screen; tickets are kept"),
     ("/new", "Same as /clear"),
     ("/copy", "Copy the last answer"),
+    ("/login", "Sign in again to the current mode's provider account"),
     ("/native", "Open the provider's own client, then come back"),
     ("/help", "List commands and keys"),
     ("/exit", "Quit Donut"),
@@ -1707,7 +1708,7 @@ class Donut(App):
             self.notify("Copied last response (terminal clipboard support required).")
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /native · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -1764,6 +1765,8 @@ class Donut(App):
                             line.append("  " + selected["description"], style=DIM)
                         self.say(line)
                         self.say("  Install or remove plugins with /native.", DIM)
+        elif name == "/login":
+            await self.login()
         elif name == "/native":
             await self.native()
         elif name == "/rename" and self.profiles.get(self.role, {}).get("engine") != "claude":
@@ -2607,6 +2610,19 @@ class Donut(App):
                 self.say("WORK COMPLETE", f"bold {ORANGE}")
             else:
                 self.say(f"Worker stopped with exit code {code}; inspect results above.", CORAL)
+
+    async def login(self):
+        profile = self.profiles[self.role]
+        engine = profile["engine"]
+        if engine not in ("claude", "codex"):
+            return self.say(f"/login: {engine} has no sign-in; set its key in your shell.", DIM)
+        env = os.environ.copy()
+        if profile.get("claude_config_dir"):
+            env["CLAUDE_CONFIG_DIR"] = str(Path(profile["claude_config_dir"]).expanduser())
+        args = [shutil.which(engine) or engine] + (["auth", "login"] if engine == "claude" else ["login"])
+        with self.suspend():
+            code = subprocess.call(args, cwd=self.project, env=env)
+        self.say(f"Signed in. Send your message again." if code == 0 else f"Login failed (exit {code}).")
 
     async def native(self):
         profile = self.profiles[self.role]
