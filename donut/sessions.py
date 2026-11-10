@@ -124,6 +124,21 @@ class CodexSession:
         self.permission = "ask"
         self.permission_changed = False
 
+    async def set_effort(self, level):
+        """Use this reasoning effort from the next turn on; Codex keeps it for later turns."""
+        self.profile = dict(self.profile, effort=level)
+        self.effort_changed = True
+
+    async def model_details(self):
+        """Codex's own model list, with each model's reasoning efforts and their descriptions."""
+        models, cursor = [], None
+        while True:
+            result = await self.request("model/list", {"cursor": cursor})
+            models.extend(result.get("data", []))
+            cursor = result.get("nextCursor")
+            if not cursor:
+                return models
+
     async def switch_model(self, model):
         """Use another model from the next turn on, in the same thread, so Codex keeps its whole context."""
         self.profile = dict(self.profile, model=model)
@@ -293,6 +308,11 @@ class CodexSession:
         if getattr(self, "model_changed", False):
             params["model"] = self.profile.get("model")  # turn/start overrides persist for later turns.
             self.model_changed = False
+        if self.profile.get("effort") and (
+            getattr(self, "effort_changed", False) or not getattr(self, "effort_sent", False)
+        ):
+            params["effort"] = self.profile["effort"]
+            self.effort_changed, self.effort_sent = False, True
         if self.permission_changed:
             params.update(
                 approvalPolicy=approval, sandboxPolicy={"type": CODEX_SANDBOX[sandbox]}, approvalsReviewer=reviewer
@@ -380,6 +400,16 @@ class ClaudeSession:
     async def _set_model(self, model):
         await self.client.set_model(model or None)
 
+    async def set_effort(self, level):
+        """Change effort in the live session, as Claude Code's own /effort does."""
+        await self._call("set_effort", level)
+        self.profile = dict(self.profile, effort=level)
+
+    async def _set_effort(self, level):
+        await self.client._query._send_control_request(
+            {"subtype": "apply_flag_settings", "settings": {"effortLevel": level}}
+        )
+
     async def _connect(self):
         from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, PermissionResultAllow, PermissionResultDeny
 
@@ -403,6 +433,7 @@ class ClaudeSession:
             can_use_tool=permission,
             include_partial_messages=True,
             resume=getattr(self, "resume_id", None) or None,
+            effort=self.profile.get("effort") or None,
         )
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()

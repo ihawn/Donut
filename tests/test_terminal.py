@@ -53,17 +53,17 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
             config = {
                 "aliases": {
                     "claude": {"engine": "claude", "model": "sonnet"},
-                    "claude-personal": {"engine": "claude", "model": "sonnet"},
+                    "claude-second": {"engine": "claude", "model": "sonnet"},
                 },
                 "planner": "claude",
-                "default_model": "claude-personal",
+                "default_model": "claude-second",
             }
             with patch("donut.terminal.load", return_value=config):
                 app = Donut(Path(temp))
             async with app.run_test() as pilot:
                 await pilot.pause()
                 self.assertEqual(app.selected["plan"], "claude")
-                self.assertEqual(app.selected["work"], "claude-personal")
+                self.assertEqual(app.selected["work"], "claude-second")
                 app.execute("/help")
                 await pilot.pause()
                 self.assertFalse(app.busy)
@@ -96,7 +96,7 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_picker_keeps_account_and_model_together(self):
         with tempfile.TemporaryDirectory() as temp:
-            config = {"aliases": {"claude": {"engine": "claude"}, "claude-personal": {"engine": "claude"}}}
+            config = {"aliases": {"claude": {"engine": "claude"}, "claude-second": {"engine": "claude"}}}
             with patch("donut.terminal.load", return_value=config):
                 app = Donut(Path(temp))
             fake = AsyncMock()
@@ -107,11 +107,11 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 menu = app.query_one(Menu)
                 self.assertEqual(
-                    [row[0] for row in menu.visible_rows], ["claude  Sonnet 5.5", "claude-personal  Sonnet 5.5"]
+                    [row[0] for row in menu.visible_rows], ["claude  Sonnet 5.5", "claude-second  Sonnet 5.5"]
                 )
                 await pilot.press("down", "enter")
                 await pilot.pause()
-                self.assertEqual(app.selected["plan"], "claude-personal")
+                self.assertEqual(app.selected["plan"], "claude-second")
                 self.assertEqual(app.profiles["plan"]["model"], "sonnet")
                 self.assertEqual(app.selected["work"], "claude")
 
@@ -481,12 +481,12 @@ class ActiveModelAndUsageTests(unittest.IsolatedAsyncioTestCase):
     def app(self, temp):
         config = {
             "aliases": {
-                "claude-personal": {"engine": "claude", "model": "claude-opus-5-5", "claude_config_dir": "/x"},
+                "claude-second": {"engine": "claude", "model": "claude-opus-5-5", "claude_config_dir": "/x"},
                 "codex": {"engine": "codex", "model": "gpt-6"},
                 "local": {"engine": "ollama", "model": "qwen3.6:35b"},
                 "other-local": {"engine": "ollama", "model": "llama"},
             },
-            "planner": "claude-personal",
+            "planner": "claude-second",
             "default_model": "local",
         }
         with patch("donut.terminal.load", return_value=config):
@@ -534,7 +534,7 @@ class ActiveModelAndUsageTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 bar = str(app.query_one("#usage").render())
-                self.assertIn("claude-personal", bar)
+                self.assertIn("claude-second", bar)
                 self.assertIn("codex", bar)
                 self.assertIn("qwen3.6 local", bar)
                 self.assertNotIn("llama", bar)  # Only local models in use are listed.
@@ -1166,8 +1166,8 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         from donut.terminal import link_markdown, markdown
 
         self.assertEqual(
-            link_markdown("See https://github.com/x/y/pull/1427. Also [PR](https://a.b/c) and <https://d.e>"),
-            "See <https://github.com/x/y/pull/1427>. Also [PR](https://a.b/c) and <https://d.e>",
+            link_markdown("See https://github.com/x/y/pull/42. Also [PR](https://a.b/c) and <https://d.e>"),
+            "See <https://github.com/x/y/pull/42>. Also [PR](https://a.b/c) and <https://d.e>",
         )
         code = "Run `curl https://a.b/c` then\n```\nhttps://in.code/block\n```\n"
         self.assertEqual(link_markdown(code), code)  # Code stays exactly as written.
@@ -1178,12 +1178,12 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 log = app.query_one(RichLog)
                 log.clear()
-                app.say("PR: https://github.com/example/project/pull/1427")
+                app.say("PR: https://github.com/example/project/pull/42")
                 app.say(markdown("Merged https://github.com/x/y/pull/2 today."))
                 await pilot.pause()
                 await pilot.click(RichLog, offset=(12, 0))  # Inside the first URL (the log has 1 column of padding).
                 await pilot.pause()
-                opened.assert_called_with("https://github.com/example/project/pull/1427")
+                opened.assert_called_with("https://github.com/example/project/pull/42")
                 await pilot.click(RichLog, offset=(14, 1))
                 await pilot.pause()
                 opened.assert_called_with("https://github.com/x/y/pull/2")
@@ -1364,16 +1364,16 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
 
             async def query(text):
                 planner.calls.append(text)
-                app.event("text", "Session renamed to: fix dashboard pr")
+                app.event("text", "Session renamed to: fix login bug")
 
             planner.query = query
             # The planner is Claude: its own /rename names the session, and the folder follows.
             await self.send(pilot, app, "/rename")
             self.assertEqual(planner.calls[-1], "/rename")
-            self.assertEqual(app.session_name, "fix-dashboard-pr")
-            self.assertTrue((Path(self.temp.name) / ".donut" / "fix-dashboard-pr" / "to_do").is_dir())
+            self.assertEqual(app.session_name, "fix-login-bug")
+            self.assertTrue((Path(self.temp.name) / ".donut" / "fix-login-bug" / "to_do").is_dir())
             self.assertFalse((Path(self.temp.name) / ".donut" / first).exists())
-            self.assertEqual(conversations.for_project(self.temp.name)[0]["session"], "fix-dashboard-pr")
+            self.assertEqual(conversations.for_project(self.temp.name)[0]["session"], "fix-login-bug")
             # The soloist is Codex, which has no /rename: Donut names the folder itself.
             await self.send(pilot, app, "/solo")
             await self.send(pilot, app, "/rename Wall jump: v2")
@@ -1387,12 +1387,12 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             written = []
             original = app._driver.write
             app._driver.write = lambda data: (written.append(data), original(data))
-            app.rename_session("fix dashboard pr")
+            app.rename_session("fix login bug")
             await pilot.pause()
             project = Path(self.temp.name).name
-            self.assertIn(f"\x1b]0;fix-dashboard-pr · {project} · Donut\x07", written)
+            self.assertIn(f"\x1b]0;fix-login-bug · {project} · Donut\x07", written)
             status = str(app.query_one("#status").render())
-            self.assertIn("session fix-dashboard-pr", status)
+            self.assertIn("session fix-login-bug", status)
             written.clear()
             app.status()
             self.assertEqual(written, [])  # Only written when it changes.
@@ -1404,7 +1404,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         app = self.make_app()
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            app.event("task", {"id": "t1", "state": "running", "kind": "shell", "description": "Poll the preload run"})
+            app.event("task", {"id": "t1", "state": "running", "kind": "shell", "description": "Poll the build"})
             app.event("task", {"id": "t2", "state": "running", "kind": "shell", "description": "Watch CI"})
             app.event("task", {"id": "a1", "state": "running", "kind": "agent", "description": "Explore"})
             await pilot.pause()
@@ -1415,7 +1415,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIn("⏳ 1 shell running", str(app.query_one("#status").render()))
             body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
-            self.assertEqual(body.count("Background shell completed  Poll the preload run"), 1)
+            self.assertEqual(body.count("Background shell completed  Poll the build"), 1)
             self.assertIn("Background agent killed  Explore", body)
 
     async def test_resume_with_nothing_saved(self):

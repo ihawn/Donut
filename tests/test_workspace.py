@@ -57,8 +57,8 @@ class RenameTests(unittest.TestCase):
         self.project = Path(temp.name)
 
     def test_names_become_safe_folder_names(self):
-        self.assertEqual(workspace.slug("fix dashboard pr"), "fix-dashboard-pr")
-        self.assertEqual(workspace.slug("  Fix: PR #1431 / dates!  "), "Fix-PR-1431-dates")
+        self.assertEqual(workspace.slug("fix login bug"), "fix-login-bug")
+        self.assertEqual(workspace.slug("  Fix: PR #7 / login!  "), "Fix-PR-7-login")
         self.assertEqual(workspace.slug("../../etc"), "etc")
         self.assertEqual(workspace.slug("skills"), "")  # .donut/skills holds the worker skill.
         self.assertEqual(workspace.slug("   "), "")
@@ -66,11 +66,11 @@ class RenameTests(unittest.TestCase):
     def test_rename_moves_the_tickets_and_never_overwrites(self):
         lanes = workspace.create(self.project, "20261109-1424")
         (lanes / "to_do" / "001_a.md").write_text("a")
-        self.assertEqual(workspace.rename(self.project, "20261109-1424", "fix dashboard pr"), "fix-dashboard-pr")
-        self.assertTrue((self.project / ".donut" / "fix-dashboard-pr" / "to_do" / "001_a.md").is_file())
+        self.assertEqual(workspace.rename(self.project, "20261109-1424", "fix login bug"), "fix-login-bug")
+        self.assertTrue((self.project / ".donut" / "fix-login-bug" / "to_do" / "001_a.md").is_file())
         self.assertFalse((self.project / ".donut" / "20261109-1424").exists())
         workspace.create(self.project, "other")
-        self.assertEqual(workspace.rename(self.project, "other", "fix dashboard pr"), "fix-dashboard-pr-2")
+        self.assertEqual(workspace.rename(self.project, "other", "fix login bug"), "fix-login-bug-2")
         self.assertEqual(workspace.rename(self.project, "not-made-yet", "later"), "later")  # Nothing to move.
         with self.assertRaises(ValueError):
             workspace.rename(self.project, "later", "!!!")

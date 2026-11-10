@@ -57,6 +57,8 @@ def validate(profile):
         raise ValueError("A model ID is required")
     if "permission_mode" in profile and profile["permission_mode"] not in PERMISSION_MODES:
         raise ValueError("permission_mode must be one of: " + ", ".join(PERMISSION_MODES))
+    if "effort" in profile and not re.fullmatch(r"[a-z]{1,16}", str(profile["effort"])):
+        raise ValueError("effort must be a provider effort level such as low, medium or high")
     if "claude_config_dir" in profile:
         directory = profile["claude_config_dir"]
         if engine != "claude" or not isinstance(directory, str) or not directory.strip() or "\0" in directory:
@@ -101,6 +103,8 @@ def command(profile, prompt, readonly=False, permission=None, review=False):
             args += ["--sandbox", "workspace-write"]
         if model:
             args += ["--model", model]
+        if profile.get("effort"):
+            args += ["-c", f'model_reasoning_effort="{profile["effort"]}"']
         args += ["-"]
     elif engine == "claude":
         args = [
@@ -122,6 +126,8 @@ def command(profile, prompt, readonly=False, permission=None, review=False):
             args += ["--permission-mode", native_permission("claude", permission), "--permission-prompts", "none"]
         if model:
             args += ["--model", model]
+        if profile.get("effort"):
+            args += ["--effort", profile["effort"]]
         args += ["Follow the request on stdin."]
     else:
         args = [

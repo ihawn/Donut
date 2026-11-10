@@ -82,7 +82,7 @@ def count(project, session):
 
 
 def slug(name):
-    """A session name made safe for a folder: "fix dashboard pr" -> "fix-dashboard-pr"."""
+    """A session name made safe for a folder: "fix login bug" -> "fix-login-bug"."""
     text = re.sub(r"[^A-Za-z0-9_.-]+", "-", (name or "").strip()).strip("-.")
     text = re.sub(r"-{2,}", "-", text)[:64].rstrip("-.")
     return text if valid(text) else ""
