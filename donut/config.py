@@ -29,6 +29,7 @@ def save(config):
             "claude_config_dir",
             "unload_others",
             "permission_mode",
+            "effort",
         }
         if set(profile) - allowed:
             raise ValueError("Unexpected profile fields; credentials cannot be saved.")
@@ -61,6 +62,8 @@ def role_choice(config, role):
         profile = dict(aliases[saved["alias"]])
         if saved.get("model"):
             profile["model"] = saved["model"]
+        if saved.get("effort"):
+            profile["effort"] = saved["effort"]
         return saved["alias"], profile
     if role == "review":
         reviewer = config.get("reviewer")
@@ -77,10 +80,12 @@ def role_choice(config, role):
     return None
 
 
-def remember_role(role, alias, model):
-    """Save which alias and model a role uses, so /model and /review choices stick across restarts."""
+def remember_role(role, alias, model, effort=None):
+    """Save which alias, model and effort a role uses, so /model, /review and /effort choices stick."""
     config = load()
     config.setdefault("roles", {})[role] = {"alias": alias, "model": model or ""}
+    if effort:
+        config["roles"][role]["effort"] = effort
     if role == "review":
         config.pop("reviewer", None)
     save(config)

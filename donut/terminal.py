@@ -30,7 +30,7 @@ from .summaries import claude_context, codex_context, mcp_servers, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
-from . import background, plugins, ponytail, workspace
+from . import background, effort, plugins, ponytail, workspace
 from .platform import copy_native, open_window, window_command
 from .platform import process_options
 from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
@@ -264,6 +264,7 @@ COMMANDS = [
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
     ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
     ("/verbosity", "How much of the work Donut shows you mid-turn; models think and answer the same"),
+    ("/effort", "How hard the current mode's model thinks, in its provider's own levels"),
     ("/usage", "Show usage for each configured connection"),
     ("/plugin", "Browse the provider's plugin commands"),
     ("/mcp", "Show MCP server status"),
@@ -851,6 +852,8 @@ class Donut(App):
                 value = f"{model_name(profile, alias)} (= planner)"
             else:
                 value = model_name(profile, alias)
+            if profile.get("effort"):
+                value += f" · {profile['effort']}"
             entry = Text()
             if role == running_role:
                 entry.append("● ", style=f"bold {ORANGE}")
@@ -1642,6 +1645,8 @@ class Donut(App):
                 chosen = await self.choose(f"Permission mode · now {current}", rows)
             if chosen:
                 await self.set_permission(chosen)
+        elif name == "/effort":
+            await self.choose_effort(args[0] if args else None)
         elif name == "/verbosity":
             if args and args[0] in VERBOSITY:
                 chosen = args[0]
@@ -2241,6 +2246,60 @@ class Donut(App):
         for path in sorted(created):
             self.say("  " + path.relative_to(self.project).as_posix(), GRAY)
         self.say("PLANNING COMPLETE · /work next 1", f"bold {ORANGE}")
+
+    async def effort_options(self, role):
+        """(what the provider calls it, [(level, description)], default level) for the role's model."""
+        profile, alias = self.profiles.get(role, {}), self.selected.get(role)
+        engine = profile.get("engine")
+        if engine == "claude":
+            session = await self.session(alias, profile, "review" if role == "review" else None, track=False)
+            return effort.claude_options(getattr(session, "info", {}), profile.get("model"))
+        if engine == "codex":
+            session = await self.session(alias, profile, track=False)
+            return effort.codex_options(await session.model_details(), profile.get("model"))
+        return "Effort", [], None
+
+    async def choose_effort(self, level=None):
+        """/effort [LEVEL]: how hard the current mode's model thinks, in its provider's own terms."""
+        role = self.role
+        profile, alias = self.profiles.get(role, {}), self.selected.get(role)
+        if not profile:
+            self.say(f"No {ROLE_TITLES[role]} chosen; pick one with {ROLE_COMMANDS[role]}.", DIM)
+            return
+        name = model_name(profile, alias)
+        self.status("checking effort levels")
+        term, levels, default = await self.effort_options(role)
+        if not levels:
+            self.say(f"  {name} has no effort setting Donut can change.", DIM)
+            return
+        current = profile.get("effort") or default
+        if level is None:
+            rows = [
+                (value, value, (description + (" · now" if value == current else "")).strip(" ·"))
+                for value, description in levels
+            ]
+            level = await self.choose(f"{term} for {name} · now {current or 'default'}", rows)
+            if level is None:
+                return
+        if level not in {value for value, _ in levels}:
+            raise ValueError(f"{name} takes {term.lower()} " + ", ".join(value for value, _ in levels))
+        self.profiles[role] = dict(profile, effort=level)
+        session = self.sessions.get(self.session_key(alias, profile, self.purpose))
+        if session is not None and hasattr(session, "set_effort"):
+            await session.set_effort(level)
+            self.session_profiles[self.session_key(alias, profile, self.purpose)] = self.profiles[role]
+        try:
+            remember_role(role, alias, profile.get("model"), level)
+        except (ValueError, OSError) as error:
+            self.say(f"Effort applies to this session only: {error}", DIM)
+        if role == "plan":
+            self.sync_reviewer()
+        elif role == "review":
+            self.reviewer = "chosen"  # Saved with its own effort, the reviewer no longer follows the planner.
+        line = Text(f"  {term} · {level}", style=f"bold {ORANGE}")
+        line.append(f"  {name}, {ROLE_TITLES[role]}", style=DIM)
+        self.say(line)
+        self.status()
 
     async def choose_reviewer(self, choice=None, allow_off=True):
         """Pick who reviews each finished ticket: the planner (default), any account and model, or off.

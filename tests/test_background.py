@@ -107,16 +107,16 @@ class ClaudeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
 
             async def query(self, text):
                 await stream.put(
-                    TaskStartedMessage("task_started", {}, "t1", "Poll the preload run", "u", "s", "b1", "local_bash")
+                    TaskStartedMessage("task_started", {}, "t1", "Poll the build", "u", "s", "b1", "local_bash")
                 )
-                await stream.put(AssistantMessage([TextBlock("I started the preload job.")], "m"))
+                await stream.put(AssistantMessage([TextBlock("I started the build.")], "m"))
                 await stream.put(ResultMessage("success", 1, 1, False, 1, "sid"))
 
         session.client, session.inbox, session.in_turn = Client(), asyncio.Queue(), False
         session.pump = asyncio.create_task(session._pump())
         await asyncio.wait_for(session._query("run it"), 2)
         self.assertIn(
-            ("task", {"id": "t1", "state": "running", "kind": "shell", "description": "Poll the preload run"}), events
+            ("task", {"id": "t1", "state": "running", "kind": "shell", "description": "Poll the build"}), events
         )
         events.clear()
         # The turn is over; the shell finishes later.

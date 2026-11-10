@@ -146,21 +146,21 @@ class ModelSwitchTests(SwitchSetup):
             self.app.selected["review"], self.app.profiles["review"] = "codex", dict(self.aliases["codex"])
             self.app.reviewer = "chosen"
             await self.send(pilot, "/review")
-            await self.send(pilot, "check the dashboard PR")
+            await self.send(pilot, "check the login change")
             reviewer = Provider.made[-1]
             self.assertIn("[plan mode, opus]\nUser: plan a thing", reviewer.prompts[0])
             self.app.selected["solo"], self.app.profiles["solo"] = "local", dict(self.aliases["local"])
             await self.send(pilot, "/solo")
             await self.send(pilot, "one sentence on what was just checked")
             solo = Provider.made[-1]
-            self.assertIn("[review mode, gpt-6.1]\nUser: check the dashboard PR", solo.prompts[0])
+            self.assertIn("[review mode, gpt-6.1]\nUser: check the login change", solo.prompts[0])
             self.assertIn("[plan mode, opus]", solo.prompts[0])
             # Back in plan mode, the planner is told only what it missed, never its own turn again.
             await self.send(pilot, "/plan")
             await self.send(pilot, "carry on")
             latest = planner.prompts[-1]
             self.assertIn("since your last turn", latest)
-            self.assertIn("check the dashboard PR", latest)
+            self.assertIn("check the login change", latest)
             self.assertIn("one sentence on what was just checked", latest)
             self.assertNotIn("plan a thing", latest)
             await self.send(pilot, "and again")
@@ -194,7 +194,7 @@ class RealCodexThroughDonutTests(SwitchSetup):
             async with self.app.run_test() as pilot:
                 await pilot.pause()
                 await self.send(pilot, "/review")
-                await self.send(pilot, "https://github.com/x/y/pull/1431")
+                await self.send(pilot, "https://github.com/x/y/pull/7")
                 await self.send(pilot, "and again")
         methods = [method for method, _ in sent]
         self.assertEqual(methods.count("thread/start"), 1)
