@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
-from donut.terminal import Donut, Draft, Menu, OptionList, RichLog
+from donut.terminal import Donut, Draft, Menu, OptionList, RichLog, Static
 
 # Never start real providers from the background usage refresh during tests.
 Donut.AUTO_REFRESH_QUOTAS = False
@@ -1232,6 +1232,26 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(planner.calls[-1].rstrip().endswith("what did that print?"))
             await self.send(pilot, app, "and now?")
             self.assertNotIn("Shell commands I ran", planner.calls[-1])  # Given once.
+
+    async def test_shell_output_leaves_the_transcript_at_its_end(self):
+        import sys
+
+        app = self.make_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await self.send(pilot, app, f'!"{sys.executable}" -c "[print(i) for i in range(200)]"')
+            log = app.query_one(RichLog)
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if not app.busy and "exit 0" in log.lines[-1].text:
+                    break
+            await pilot.pause(0.1)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)
+            # When the turn ends, the usage line refreshes and can grow, which shrinks the transcript.
+            app.query_one("#usage", Static).update("claude 5h\ncodex 5h\nqwen\nmore")
+            await pilot.pause(0.2)
+            self.assertGreater(log.max_scroll_y, 0)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)  # The exit line is still in view.
 
     async def test_a_model_waiting_on_a_command_is_woken_when_it_exits(self):
         import sys

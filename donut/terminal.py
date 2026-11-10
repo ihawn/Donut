@@ -196,6 +196,12 @@ class Transcript(RichLog, can_focus=False):
         self._line_cache.clear()
         self.refresh()
 
+    def on_resize(self, event):
+        # Something around the transcript grew or shrank (the usage line after a turn, the reply area, a menu):
+        # stay at the end unless the user is reading back.
+        if getattr(self.app, "follow", False):
+            self.call_after_refresh(lambda: self.scroll_end(animate=False))
+
     def on_mouse_scroll_up(self, event):
         self.app.follow = False  # Reading back: new output no longer pulls the view down.
 
