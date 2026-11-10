@@ -216,3 +216,53 @@ class TerminalEffortTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaudeLaunchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sessions_can_switch_to_full_access_later_but_review_cannot(self):
+        import claude_agent_sdk
+        from donut.sessions import ClaudeSession
+
+        seen = []
+
+        class Client:
+            def __init__(self, options):
+                seen.append(options)
+
+            async def connect(self):
+                pass
+
+            async def get_server_info(self):
+                return {}
+
+            async def receive_messages(self):
+                return
+                yield
+
+        for read_only in (False, True):
+            session = ClaudeSession(Path("."), {"model": "opus"}, lambda *e: None, None)
+            session.read_only = read_only
+            with patch.object(claude_agent_sdk, "ClaudeSDKClient", Client):
+                await session._connect()
+            session.pump.cancel()
+        self.assertEqual(seen[0].extra_args, {"allow-dangerously-skip-permissions": None})
+        self.assertEqual(seen[1].extra_args, {})  # Review stays read-only.
+        self.assertEqual(seen[1].permission_mode, "plan")
+
+
+class PermissionErrorTests(TerminalEffortTests):
+    test_effort_in_each_providers_terms = None  # Only the setup is shared.
+
+    async def test_a_refused_switch_is_reported_once(self):
+        from donut.terminal import RichLog
+
+        class Refuses:
+            async def set_permission(self, mode):
+                raise RuntimeError("Cannot set permission mode to bypassPermissions")
+
+        async with self.app.run_test() as pilot:
+            await pilot.pause()
+            self.app.sessions = {("a", "x"): Refuses(), ("b", "y"): Refuses(), ("c", "z"): Refuses()}
+            await self.app.set_permission("full")
+            body = "\n".join(strip.text for strip in self.app.query_one(RichLog).lines)
+            self.assertEqual(body.count("Could not change the provider's permission mode"), 1)

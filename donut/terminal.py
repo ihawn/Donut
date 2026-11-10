@@ -1128,11 +1128,14 @@ class Donut(App):
             self.config["permission_mode"] = mode
         except (ValueError, OSError) as error:
             self.say(f"Permission mode applies to this session only: {error}", DIM)
+        failures = set()
         for session in list(self.sessions.values()):
             try:
                 await session.set_permission(mode)
             except Exception as error:
-                self.say(f"Could not change the provider's permission mode: {error}", CORAL)
+                failures.add(str(error))
+        for error in sorted(failures):  # Once per reason, not once per open session.
+            self.say(f"Could not change the provider's permission mode: {error}", CORAL)
         if announce:
             label, description = PERMISSION_MODES[mode]
             line = Text(f"  {label} mode", style=f"bold {ORANGE if mode != 'full' else CORAL}")
