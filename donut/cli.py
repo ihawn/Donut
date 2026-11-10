@@ -124,6 +124,11 @@ def main():
         help="with --work: alias that revises blocked tickets and repairs stuck ones, or off (default: the planner)",
     )
     parser.add_argument(
+        "--no-pr",
+        action="store_true",
+        help="with --work: do not raise a pull request after the reviewer approves the run",
+    )
+    parser.add_argument(
         "--review-rounds",
         type=int,
         default=3,
@@ -249,6 +254,7 @@ def main():
                 review_rounds=args.review_rounds,
                 planner=planner,
                 lanes=workspace.lanes_dir(project, session),
+                pull_request=not args.no_pr and config.get("pull_requests", True) is not False,
             )
         return plan_session(profile, alias, project, args.request, session)
     except KeyboardInterrupt:
