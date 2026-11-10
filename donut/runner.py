@@ -10,7 +10,7 @@ import sys
 import tempfile
 import queue
 import threading
-from . import checkpoints
+from . import checkpoints, pullrequest
 from .install_skills import worker_skill
 from .providers import command, activate
 from .platform import process_options, stop_process
@@ -284,7 +284,9 @@ def review_prompt(project, ticket_path, files, diff_text):
         f"Diff:\n```diff\n{diff_text or '(no diff available; read the changed files)'}\n```\n\n"
         "Read the changed files and anything the ticket names. Judge whether the work meets the ticket's Goal, "
         "Requirements and Acceptance criteria within its scope, whether its Completion notes report tests honestly, "
-        "and whether anything outside its scope was broken. Leave Human check items to the human. "
+        "and whether it causes regressions: read the callers and tests of what changed and check that existing "
+        "behaviour outside the ticket still works. Approval means done and safe to merge, since an approved run "
+        "becomes a pull request. Leave Human check items to the human. "
         "Request changes only for real problems: unmet requirements, bugs, failing or missing required tests, "
         "or edits outside the ticket's scope. Do not request changes for style preferences.\n\n"
         "End your answer with exactly one verdict line, then the feedback:\n"
@@ -465,8 +467,43 @@ def repair_queue(planner, worker, project, broken, run_dir, lanes=None):
     )
 
 
+def open_pull_request(planner, reviewer, project, records, run_dir):
+    """After an approved run, the planner writes the pull request and Donut opens it. Returns its URL or None."""
+    if not reviewer or not planner:
+        return None  # Only reviewer-approved work becomes a pull request.
+    ok, reason = pullrequest.approved(records)
+    if not ok:
+        print(paint(f"Pull request: not raised; {reason}.", "orange"), flush=True)
+        return None
+    files = pullrequest.files_changed(records)
+    print(f"\n[pull request] {planner.get('model') or planner['engine']} writes it", flush=True)
+    if planner["engine"] == "ollama":
+        activate(planner)
+    log = run_dir / "pull_request.log"
+    run_agent(planner, project, pullrequest.describe_prompt(records, files), log, summary=True)
+    title, body = pullrequest.parse_description(tail(log, 20000))
+    if not title:
+        print(paint("Pull request: not raised; the planner gave no title.", "orange"), flush=True)
+        return None
+    try:
+        url = pullrequest.raise_pull_request(project, title, body, files)
+    except (ValueError, OSError) as error:
+        print(paint(f"Pull request: not raised; {error}. The work stays in your working tree.", "orange"))
+        return None
+    print(paint(f"Pull request: {url}", "teal"), flush=True)
+    return url
+
+
 def run_batch(
-    profile, project, count, checkpoint=False, reviewer=None, review_rounds=REVIEW_ROUNDS, planner=None, lanes=None
+    profile,
+    project,
+    count,
+    checkpoint=False,
+    reviewer=None,
+    review_rounds=REVIEW_ROUNDS,
+    planner=None,
+    lanes=None,
+    pull_request=False,
 ):
     """Work up to count tickets from one lanes folder: a session's .donut/<session>/ (default: swim_lanes/)."""
     if count != "all" and (not count.isdecimal() or int(count) < 1):
@@ -643,6 +680,12 @@ def run_batch(
                 failure = True
         else:
             print("No eligible tickets to run.")
+        if pull_request and records:
+            url = open_pull_request(planner, reviewer, project, records, run_dir)
+            if url:
+                for record in records:
+                    record["pull_request"] = url
+                (run_dir / "results.json").write_text(json.dumps(records, indent=2))
         if profile["engine"] == "ollama":
             activate(profile)
         print(f"\nLogs and results: {run_dir}")

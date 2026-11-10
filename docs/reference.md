@@ -13,7 +13,7 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
   | Pick the model | Enter the mode | What the mode does |
   |---|---|---|
   | `/planner` | `/plan` | Messages go to the planner, which researches and writes tickets. |
-  | `/worker` | `/work` | Runs tickets: `/work next 1`, `/work next all`, `/work next 3 checkpoint` (a git commit after each ticket). |
+  | `/worker` | `/work` | Runs tickets: `/work next 1`, `/work next all`, `/work next 3 checkpoint` (a git commit after each ticket). An approved run raises a pull request; add `no-pr` to skip it. |
   | `/reviewer` | `/review` | Messages go to the reviewer, which reads the project and never edits it. The reviewer also checks each finished ticket during `/work`. |
   | `/soloist` | `/solo` | Messages go to the soloist exactly as typed, like Claude Code: no planner, tickets, review or recovery. |
 
@@ -111,6 +111,8 @@ Each planning prompt starts a new agent process with earlier requests and a refe
 `donut --work next 1` processes exactly one eligible ticket (or none when no ticket is eligible), then prints the run summary. Use `donut --work next 3` for up to three tickets or `donut --work next all` for all eligible tickets. Each ticket gets a fresh worker context. Bare `donut --work` still runs all eligible tickets, and the shorter `donut --work 3` form remains supported. The older `donut plan "request"` and `donut do next COUNT` forms remain compatible.
 
 Add `--checkpoint` to commit the working tree after every ticket (`donut --work next all --checkpoint`). The project must be a git repository; each commit is `donut: done NNN_slug.md` or `donut: blocked NNN_slug.md`, so a bad ticket is one `git revert` away and a good run reads as a clean history. Without the flag nothing is committed, but each record in `results.json` still lists the files the ticket changed when the project is under git.
+
+When a `/work` run ends with every ticket it worked Done and approved by the reviewer, Donut raises a pull request. The reviewer approves only work that is done and causes no regressions: it reads the callers and tests of what changed. The planner then writes the title and description from the run's evidence, read-only. Donut does the git steps itself, the same way every time: on the default branch it creates a `donut/<title>` branch, commits only the files the tickets changed (other changes in the working tree stay uncommitted), pushes it to `origin` and runs `gh pr create`. The link is printed and saved in `results.json`. A blocked ticket, a missing approval or no reviewer means no pull request; a missing `origin` remote or GitHub CLI prints the reason and leaves the work in the working tree. Add `--no-pr` (`/work next 3 no-pr`) to skip it for one run, or set `"pull_requests": false` in the configuration to turn it off.
 
 `-m` / `--model` accepts a configured alias for either planning or execution. The planner/orchestrator and worker may be the same local model, different local models, or hosted models. Setup stores a default planner separately from the default worker. `-p` / `--project` accepts an absolute or relative directory and defaults to the current directory. `-s` / `--session NAME` picks the tickets folder `.donut/NAME/`; without it, command-line runs use the most recently changed session, then an older project's `swim_lanes/`, then a new session. `donut -s NAME` opens the terminal in that session. Flags work before or after the subcommand. `donut -h` lists commands.
 

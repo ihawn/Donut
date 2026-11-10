@@ -2513,6 +2513,8 @@ class Donut(App):
 
     async def work_tickets(self, choice):
         words = choice.split()
+        no_pr = "no-pr" in words
+        words = [word for word in words if word != "no-pr"]
         checkpoint = words[-1:] == ["checkpoint"]
         if checkpoint:
             words = words[:-1]
@@ -2521,9 +2523,11 @@ class Donut(App):
             or words[0] != "next"
             or not (words[1] == "all" or words[1].isdecimal() and int(words[1]) > 0)
         ):
-            raise ValueError("Use /work next COUNT [checkpoint] (COUNT is a positive integer or all).")
+            raise ValueError("Use /work next COUNT [checkpoint] [no-pr] (COUNT is a positive integer or all).")
         if checkpoint:
             words.append("--checkpoint")
+        if no_pr:
+            words.append("--no-pr")
         alias = self.selected["work"]
         if not alias:
             raise ValueError("Run donut setup to configure a worker.")
