@@ -110,6 +110,30 @@ class ConversationOrderTests(RecentProjectTests):
         self.assertEqual([r["title"] for r in conversations.for_project(self.root)], ["plan sounds", "rename jump"])
 
 
+class RenamedSessionTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        state = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state")})
+        state.start()
+        self.addCleanup(state.stop)
+
+    def test_conversations_take_the_sessions_new_name(self):
+        conversations.record_turn(None, self.root, "plan", "plan", "a", "m", None, "first", "x", session="s1")
+        conversations.record_turn(None, self.root, "plan", "plan", "a", "m", None, "other", "x", session="s2")
+        conversations.rename_session(self.root, "s1", "fix-login-bug", "fix login bug")
+        names = {r["title"]: r.get("name") for r in conversations.for_project(self.root)}
+        self.assertEqual(names, {"first": "fix login bug", "other": None})
+        # A conversation started later in the renamed session is listed under its name too.
+        conversations.record_turn(
+            None, self.root, "solo", "solo", "a", "m", None, "later", "x", session="fix-login-bug"
+        )
+        self.assertEqual(conversations.for_project(self.root)[0]["name"], "fix login bug")
+        conversations.rename_session(self.root, None, "x", "y")  # Conversations without a session stay as they are.
+        self.assertIsNone(next(r for r in conversations.for_project(self.root) if r["title"] == "other").get("name"))
+
+
 class OpenWindowTests(unittest.TestCase):
     def open(self, system, env=None, found=()):
         with patch("donut.platform.subprocess.Popen") as popen:
