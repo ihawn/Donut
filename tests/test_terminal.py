@@ -1396,6 +1396,19 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(load().get("verbosity"), "full")  # Saved for next time.
 
+    async def test_focus_toggles_quiet_instead_of_reaching_the_provider(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await self.send(pilot, app, "/focus")
+            self.assertEqual(app.verbosity, "quiet")
+            self.assertFalse(app.query_one("#status").display)
+            self.assertFalse(app.query_one("#band").display)
+            await self.send(pilot, app, "/focus")
+            self.assertEqual(app.verbosity, "normal")
+            await self.send(pilot, app, "/focus on")
+            self.assertEqual(app.verbosity, "quiet")
+
     async def test_the_transcript_stays_at_the_bottom_while_a_long_reply_streams(self):
         app = self.make_app()
         async with app.run_test(size=(100, 30)) as pilot:

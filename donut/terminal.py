@@ -240,7 +240,7 @@ class Transcript(RichLog, can_focus=False):
 
 
 # Commands that only show something (or change only what is shown), so they run at once even mid-turn.
-INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity", "/routing"}
+INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity", "/routing", "/focus"}
 # The two versions of the interface, asked about the first time Donut opens: (label, what it says beside it).
 INTERFACES = {
     "simple": ("Simple mode", "I just want to use this like I would use Claude Code or Codex"),
@@ -303,6 +303,7 @@ COMMANDS = [
     ("/project", "Open another project in a new window"),
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
     ("/auto", "Turn auto mode on or off: the provider's reviewer approves safe actions"),
+    ("/focus", "Focus view: show only each turn's final answer (/focus off restores)"),
     ("/verbosity", "How much of the work Donut shows you mid-turn; models think and answer the same"),
     ("/effort", "How hard the current mode's model thinks, in its provider's own levels"),
     ("/usage", "Show usage for each configured connection"),
@@ -645,6 +646,7 @@ class Donut(App):
     #background.-running {{display: block;}}
     #usage {{height: auto; max-height: 2; padding: 0 2;}}
     #band {{height: auto; padding: 0 2;}}
+    .-focus #status, .-focus #usage, .-focus Footer {{display: none;}}
     #draft {{height: auto; min-height: 3; max-height: 10; margin: 0 1; border: round {CORAL} 60%;
              background: #101820; border-subtitle-align: right; border-subtitle-color: {GRAY};}}
     #draft:focus {{border: round {ORANGE};}}
@@ -1509,11 +1511,18 @@ class Donut(App):
             self.say(f"Ponytail ledger not written: {error}", DIM)
         self.render_band()
 
+    focus_view = False  # /focus: only the transcript and the prompt.
+
     def render_band(self):
         """Ponytail's band for the current mode's conversation, when Ponytail is installed for its login."""
         widget = self.query_one("#band", Static)
         profile = self.profiles.get(self.role, {})
-        if not profile or self.config.get("ponytail_band") is False or not self.has_ponytail(profile):
+        if (
+            not profile
+            or self.focus_view
+            or self.config.get("ponytail_band") is False
+            or not self.has_ponytail(profile)
+        ):
             widget.display = False
             return
         session = self.sessions.get(self.session_key(self.selected[self.role], profile, self.purpose))
@@ -1854,6 +1863,14 @@ class Donut(App):
                 await self.set_permission(chosen)
         elif name == "/effort":
             await self.choose_effort(args[0] if args else None)
+        elif name == "/focus":
+            # Claude Code's /focus is unavailable in its headless mode, so Donut's Quiet level stands in for it.
+            if args and args[0] not in ("on", "off"):
+                self.say("  Use /focus [on|off].", DIM)
+            else:
+                self.focus_view = args[0] == "on" if args else not self.focus_view
+                self.set_class(self.focus_view, "-focus")
+                await self.set_verbosity("quiet" if self.focus_view else "normal")
         elif name == "/verbosity":
             if args and args[0] in VERBOSITY:
                 chosen = args[0]
