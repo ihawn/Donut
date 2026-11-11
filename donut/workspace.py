@@ -11,12 +11,20 @@ from pathlib import Path
 ROOT = ".donut"
 LEGACY = "swim_lanes"
 LANES = ("to_do", "in_progress", "on_hold", "blocked", "done")
-RESERVED = {"skills"}  # .donut/skills holds the worker skill.
+RESERVED = {"skills", "profiles"}  # .donut/skills holds the worker skill, .donut/profiles the named profiles.
+
+
+def root(project):
+    """Where the sessions of the profile in use live: .donut/, or .donut/profiles/<name>/ for a named profile."""
+    from .config import profile_name
+
+    name = profile_name()
+    return Path(project) / ROOT if name == "default" else Path(project) / ROOT / "profiles" / name
 
 
 def lanes_dir(project, session=None):
     """The folder holding the five lanes: .donut/<session>/, or swim_lanes/ when there is no session."""
-    return Path(project) / ROOT / session if session else Path(project) / LEGACY
+    return root(project) / session if session else Path(project) / LEGACY
 
 
 def relative(project, lanes):
@@ -35,7 +43,7 @@ def new_name(project, now=None, taken=()):
     """
     base = time.strftime("%Y%m%d-%H%M", time.localtime(now))
     name, number = base, 1
-    while name in taken or (Path(project) / ROOT / name).exists():
+    while name in taken or (root(project) / name).exists():
         number += 1
         name = f"{base}-{number}"
     return name
@@ -54,10 +62,10 @@ def create(project, session):
 
 def sessions(project):
     """This project's sessions with tickets folders, most recently changed first."""
-    root = Path(project) / ROOT
-    if not root.is_dir():
+    base = root(project)
+    if not base.is_dir():
         return []
-    found = [path for path in root.iterdir() if path.is_dir() and valid(path.name) and (path / "to_do").is_dir()]
+    found = [path for path in base.iterdir() if path.is_dir() and valid(path.name) and (path / "to_do").is_dir()]
 
     def changed(path):
         return max((p.stat().st_mtime for p in [path, *path.iterdir()] if p.is_dir()), default=0)
@@ -98,12 +106,12 @@ def rename(project, old, new_name):
         raise ValueError(f"Cannot make a folder name from {new_name!r}")
     if new == old:
         return new
-    root = Path(project) / ROOT
+    folder = root(project)
     base, number = new, 1
-    while (root / new).exists():
+    while (folder / new).exists():
         number += 1
         new = f"{base}-{number}"
-    source = root / old if old else None
+    source = folder / old if old else None
     if source is not None and source.is_dir():
-        source.rename(root / new)
+        source.rename(folder / new)
     return new

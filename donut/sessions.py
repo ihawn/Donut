@@ -49,6 +49,25 @@ def codex_usage(snapshot):
 CLAUDE_WINDOWS = {"five_hour": "5h", "seven_day": "7d", "seven_day_opus": "7d opus", "seven_day_sonnet": "7d sonnet"}
 
 
+# Dollars per million tokens (input, output, cache read) by family, to estimate a turn's cost while it runs.
+# Claude's own figure replaces the estimate when the turn ends. A cache write costs 1.25 times the input price.
+CLAUDE_PRICES = {"fable": (8, 40, 0.2), "opus": (4, 20, 0.2), "sonnet": (2, 10, 0.1), "haiku": (0.1, 0.5, 0.01)}
+
+
+def claude_cost(model, usage):
+    """Estimated dollars for one Claude response from its token counts; 0 for a model with no known price."""
+    prices = next((value for family, value in CLAUDE_PRICES.items() if family in (model or "").lower()), None)
+    if not prices or not isinstance(usage, dict):
+        return 0.0
+    count = lambda key: int(usage.get(key) or 0)  # noqa: E731
+    return (
+        count("input_tokens") * prices[0]
+        + count("cache_creation_input_tokens") * prices[0] * 1.25
+        + count("output_tokens") * prices[1]
+        + count("cache_read_input_tokens") * prices[2]
+    ) / 1_000_000
+
+
 def claude_usage(info):
     """Usage windows from a Claude RateLimitInfo. unifiedWindows carries every window when present."""
     raw = getattr(info, "raw", None) or {}
@@ -484,6 +503,9 @@ class ClaudeSession:
             if windows:
                 self.emit("usage", windows)
         elif isinstance(message, AssistantMessage):
+            if message.usage:
+                dollars = claude_cost(message.model, message.usage)
+                self.emit("spend", {"id": message.message_id or message.uuid, "dollars": dollars})
             for block in message.content:
                 if isinstance(block, TextBlock) and block.text.strip():
                     if state.get("wrote"):

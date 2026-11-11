@@ -11,6 +11,7 @@ from pathlib import Path
 import tempfile
 import time
 import uuid
+from .config import state_dir
 
 KEEP_MESSAGES = 12
 MESSAGE_CHARS = 2000
@@ -18,7 +19,7 @@ KEEP_RECORDS = 200
 
 
 def store_path():
-    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut" / "conversations.json"
+    return state_dir() / "conversations.json"
 
 
 def load_all():
