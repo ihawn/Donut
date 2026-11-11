@@ -225,6 +225,6 @@ class ConversationStoreTests(unittest.TestCase):
             # A renamed session names its conversations, even ones saved with no name of their own.
             self.assertIsNone(conversations.display_name({"session": "20261109-1712"}))
             self.assertIsNone(conversations.display_name({"session": "20261109-1712-2"}))
-            self.assertEqual(conversations.display_name({"session": "lehans-bot-fix"}), "lehans-bot-fix")
+            self.assertEqual(conversations.display_name({"session": "fix-login-bug"}), "fix-login-bug")
             self.assertEqual(conversations.display_name({"session": "fix-login", "name": "fix login"}), "fix login")
         self.assertEqual(conversations.ago(1000, now=1000 + 7200), "2h ago")
