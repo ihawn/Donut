@@ -24,7 +24,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 from . import conversations
-from .config import forget_role, load, profile_name, remember_role, role_choice, save
+from .config import config_path, forget_role, load, profile_name, remember_role, role_choice, save
 from .highlight import Highlighter
 from .summaries import claude_context, codex_context, is_connected, mcp_servers, parse_mcp_list, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
@@ -2942,9 +2942,8 @@ class Donut(App):
                 # Blocked or stuck tickets go back to the planner, with the same permission mode as the worker.
                 config["aliases"]["donut-planner"] = dict(self.profiles["plan"], permission_mode=self.permission)
                 config["recovery"] = "donut-planner"
-            folder = Path(temp) / "donut"
-            folder.mkdir()
-            path = folder / "config.json"
+            path = config_path(temp)  # Where the worker, started in this window's profile, reads its configuration.
+            path.parent.mkdir(parents=True)
             path.write_text(json.dumps(config))
             path.chmod(0o600)
             env = dict(

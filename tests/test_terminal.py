@@ -465,6 +465,27 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkOutputTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_worker_of_a_named_profile_finds_its_configuration(self):
+        import os
+
+        seen = {}
+
+        async def fake_exec(*args, **kwargs):
+            home = Path(kwargs["env"]["XDG_CONFIG_HOME"])
+            seen["files"] = sorted(str(path.relative_to(home)) for path in home.rglob("*.json"))
+            raise OSError("stop here")
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"DONUT_PROFILE": "personal"}):
+            config = {"aliases": {"local": {"engine": "ollama", "model": "qwen3"}}, "default_model": "local"}
+            with patch("donut.terminal.load", return_value=config):
+                app = Donut(Path(temp))
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch("donut.terminal.asyncio.create_subprocess_exec", side_effect=fake_exec):
+                    with self.assertRaises(OSError):
+                        await app.work_tickets("next 1")
+        self.assertEqual(seen["files"], [str(Path("donut/profiles/personal.json"))])
+
     async def test_progress_updates_the_status_bar_and_output_is_highlighted(self):
         import sys
 
