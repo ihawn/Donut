@@ -216,6 +216,8 @@ def main():
                 print("No models found in the searched locations.")
             return 0
         config = load()
+        if config.get("chrome") is True:
+            os.environ["DONUT_CHROME"] = "1"  # Read where the Claude command is built, for workers and planners.
         if args.action == "models":
             for name, profile in config["aliases"].items():
                 print(f"{name:20} {profile['engine']:10} {profile.get('model') or 'provider default'}")

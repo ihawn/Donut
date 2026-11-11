@@ -1513,6 +1513,23 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("The deploy finished; all checks green.", body)
             self.assertFalse(app.busy)
 
+    async def test_chrome_is_a_saved_switch_for_new_claude_conversations(self):
+        from donut.config import load
+
+        app = self.make_app()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            self.assertNotIn("chrome", str(app.query_one("#status").render()))
+            await self.send(pilot, app, "/chrome")
+            self.assertIs(app.config.get("chrome"), True)
+            self.assertIs(load().get("chrome"), True)  # Saved for the next window.
+            self.assertIn("chrome", str(app.query_one("#status").render()))
+            await self.send(pilot, app, "/chrome maybe")
+            self.assertIs(app.config.get("chrome"), True)
+            await self.send(pilot, app, "/chrome off")
+            self.assertIs(load().get("chrome"), False)
+            self.assertNotIn("chrome", str(app.query_one("#status").render()))
+
     async def test_verbosity_changes_what_is_shown_never_what_is_sent(self):
         def turn(app):
             app.turn_text, app.shown, app.message_start = "", 0, 0
