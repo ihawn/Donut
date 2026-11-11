@@ -69,6 +69,13 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
                 app.execute("/help")
                 await pilot.pause()
                 self.assertFalse(app.busy)
+                said, say = [], app.say
+                app.say = lambda *args, **kwargs: (said.append(str(args[0])), say(*args, **kwargs))[1]
+                app.execute("/help this isn't a quotation")  # An apostrophe must not stop the command.
+                await pilot.pause()
+                app.say = say
+                self.assertTrue(said)
+                self.assertFalse([line for line in said if "No closing quotation" in line])
                 app.execute("/work")
                 await pilot.pause()
                 menu = app.query_one(Menu)
@@ -1396,6 +1403,13 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.say("a new line")
             await pilot.pause(0.2)
             self.assertEqual(log.scroll_y, where)
+            # Back at the end, however the view got there: new output is followed again.
+            log.scroll_end(animate=False)
+            await pilot.pause(0.2)
+            self.assertTrue(app.follow)
+            app.say("another line")
+            await pilot.pause(0.2)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)
 
     async def test_renaming_the_session_renames_its_tickets_folder(self):
         from donut import conversations, workspace

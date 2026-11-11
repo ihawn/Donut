@@ -205,12 +205,11 @@ class Transcript(RichLog, can_focus=False):
     def on_mouse_scroll_up(self, event):
         self.app.follow = False  # Reading back: new output no longer pulls the view down.
 
-    def on_mouse_scroll_down(self, event):
-        def back_at_end():
-            if self.scroll_y >= self.max_scroll_y - 1:
-                self.app.follow = True
-
-        self.call_after_refresh(back_at_end)
+    def watch_scroll_y(self, old_value, new_value):
+        super().watch_scroll_y(old_value, new_value)
+        # Back at the end by any means (wheel, scrollbar, keys, the end of a smooth scroll): follow new output again.
+        if new_value >= self.max_scroll_y - 1:
+            self.app.follow = True
 
     def _render_line(self, y, scroll_x, width):
         from rich.segment import Segment
@@ -1504,6 +1503,7 @@ class Donut(App):
 
     def submit(self, text):
         """Run a message now, or, during a turn, queue it; commands that only show something run at once."""
+        self.follow = True  # A new message returns to the end, wherever the view was left.
         if not self.busy:
             self.cancelled = False  # Ctrl+C from here on cancels this message, even before its model is chosen.
             self.execute(text)
@@ -1697,7 +1697,10 @@ class Donut(App):
             self.turn_finished()
 
     async def command(self, text):
-        words = shlex.split(text)
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()  # An apostrophe in plain words ("/review don't skip tests") is not a quotation.
         name, args = words[0], words[1:]
         if self.simple and name in COMPLEX_COMMANDS:
             self.say(f"  {name} is part of complex mode. /complex shows it.", DIM)
@@ -2299,9 +2302,9 @@ class Donut(App):
         if record_id is None:
             rows = [
                 (
-                    (record.get("name") or record.get("title", "(untitled)"))[:56],
+                    (conversations.display_name(record) or record.get("title", "(untitled)"))[:56],
                     record["id"],
-                    (f"{record.get('title', '')[:40]} · " if record.get("name") else "")
+                    (f"{record.get('title', '')[:40]} · " if conversations.display_name(record) else "")
                     + f"{record.get('mode', '?')} · {record.get('model') or record.get('alias')} · "
                     f"{conversations.ago(record.get('updated'))} · {record.get('turns', 0)} turn"
                     f"{'' if record.get('turns') == 1 else 's'}",
@@ -2360,17 +2363,14 @@ class Donut(App):
         resumed.donut_seen = len(self.exchanges)
         line = Text("  Resumed", style=f"bold {ORANGE}")
         line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
-        line.append(f" · {record.get('name') or record.get('title', '')}", style=GRAY)
+        line.append(f" · {conversations.display_name(record) or record.get('title', '')}", style=GRAY)
         line.append(f" · tickets {workspace.relative(self.project, self.lanes)}", style=DIM)
         self.say(line)
         if not record.get("provider_id"):
             self.say("  The provider kept no session for it, so this continues in a fresh one.", DIM)
-        for message in record.get("messages", [])[-6:]:
-            text = " ".join(message.get("text", "").split())
-            if message.get("from") == "you":
-                self.say(Text("  > " + text[:200], style=ORANGE))
-            else:
-                self.say(Text("    " + text[:300] + ("…" if len(text) > 300 else ""), style=DIM))
+        for you, answer in conversations.transcript(record):
+            self.say(Text("> " + you, style=f"bold {ORANGE}"))
+            self.say(markdown(answer.strip() or "(no reply)"))
         self.say("  Continue where you left off.", DIM)
 
     async def ensure_role(self, role):
