@@ -455,7 +455,13 @@ class ClaudeSession:
             effort=self.profile.get("effort") or None,
             # Lets /permissions or Shift+Tab switch this live session to Full access later. It bypasses
             # nothing by itself; review sessions stay read-only and never get it.
-            extra_args={} if getattr(self, "read_only", False) else {"allow-dangerously-skip-permissions": None},
+            extra_args={}
+            if getattr(self, "read_only", False)
+            # chrome: Claude Code's own switch for the Claude in Chrome extension, turned on with /chrome.
+            else {
+                "allow-dangerously-skip-permissions": None,
+                **({"chrome": None} if getattr(self, "chrome", False) else {}),
+            },
         )
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
