@@ -154,11 +154,26 @@ def classifier(config, steps):
         if chosen.get("effort"):
             profile["effort"] = chosen["effort"]
         return chosen["alias"], profile
-    top = steps[-1]
-    profile = dict(top["profile"])
+    return quick(steps[-1])
+
+
+def quick(step):
+    """(alias, profile) of a model in the list, at low effort."""
+    profile = dict(step["profile"])
     if profile.get("engine") in ("claude", "codex"):
         profile["effort"] = "low"
-    return top["alias"], profile
+    return step["alias"], profile
+
+
+def classifiers(config, steps):
+    """The classifier, then the other models strongest first, to try in turn when one fails to answer."""
+    first = classifier(config, steps)
+    tried = [first]
+    for step in reversed(steps):
+        alias, profile = quick(step)
+        if (alias, profile.get("model")) != (first[0], first[1].get("model")):
+            tried.append((alias, profile))
+    return tried
 
 
 def classifier_prompt(text):

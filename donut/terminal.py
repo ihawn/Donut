@@ -2704,18 +2704,21 @@ class Donut(App):
                 'Auto needs a Claude or Codex account to choose from, or "routing": {"models": [...]} in the '
                 "configuration. /model picks one model instead."
             )
-        alias, profile = routing.classifier(self.config, steps)
         score, problem = None, ""
         self.activity = "choosing a model"
         self.status()
-        try:
-            score = routing.parse_score(await self.one_shot(profile, routing.classifier_prompt(text)))
-            if score is None:
-                problem = "the request could not be rated"
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            problem = f"the request could not be rated ({str(error)[:80]})"
+        # A classifier that fails (a wrong model ID, an expired login) hands over to the next strongest model.
+        for alias, profile in routing.classifiers(self.config, steps):
+            try:
+                score = routing.parse_score(await self.one_shot(profile, routing.classifier_prompt(text)))
+                problem = "" if score else "the request could not be rated"
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                problem = f"the request could not be rated ({str(error)[:80]})"
+                if self.cancelled or isinstance(error, asyncio.TimeoutError):
+                    break  # A slow network would be slow for every model.
         if self.cancelled:
             self.say("  Cancelled before a model was chosen; nothing was sent.", DIM)
             return False

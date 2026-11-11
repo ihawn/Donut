@@ -66,6 +66,22 @@ class RuleTests(unittest.TestCase):
                               ("", None), ("eleven", None), ("42", None), ("2.5", None)):  # fmt: skip
             self.assertEqual(routing.parse_score(answer), score, answer)
 
+    def test_a_failed_classifier_hands_over_to_the_next_strongest_model(self):
+        steps = routing.build(
+            [("claude", {"engine": "claude", "model": name}, name) for name in ("haiku", "sonnet", "claude-opus-5.5")]
+        )
+        tried = routing.classifiers({"aliases": {}}, steps)
+        self.assertEqual([profile["model"] for _, profile in tried], ["claude-opus-5.5", "sonnet", "haiku"])
+        self.assertTrue(all(profile["effort"] == "low" for _, profile in tried))
+        config = {
+            "aliases": {"claude": {"engine": "claude"}},
+            "routing": {"classifier": {"alias": "claude", "model": "sonnet"}},
+        }
+        self.assertEqual(
+            [profile["model"] for _, profile in routing.classifiers(config, steps)],
+            ["sonnet", "claude-opus-5.5", "haiku"],
+        )
+
     def test_the_classifier_sees_only_the_start_of_the_request(self):
         prompt = routing.classifier_prompt("x" * 10_000 + "THE END")
         self.assertNotIn("THE END", prompt)
