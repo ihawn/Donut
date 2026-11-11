@@ -51,6 +51,45 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
 
 **Compatibility boundary:** this release supplies a shared terminal and provider sessions; it does not reproduce every upstream command, plugin manager, interaction type, or clipboard behavior. Unsupported Codex interaction requests are rejected visibly rather than auto-approved. Native-only features remain accessible through `/native`. Qwen/local turns use Qwen's native saved-session mechanism; API-compatible connections use Qwen as their agent engine. Legacy CLI modes below remain supported.
 
+## Simple mode, complex mode and auto
+
+Donut has two versions of its interface. The first time it opens, it asks which you want, with a line beside each:
+
+- **Simple mode**: "I just want to use this like I would use Claude Code or Codex". One conversation. Donut starts in solo mode and stays there, the model is `auto`, and the `/` menu, status line and welcome leave out the planner, worker, reviewer and ticket commands. `/help` lists what is there.
+- **Complex mode**: "I know what I'm doing. Show all complex features". Everything described above: planner, worker, reviewer and tickets, with a model you choose for each role.
+
+The answer is saved, so Donut asks once. `/simple` and `/complex` switch at any time. Closing the question without choosing shows everything and asks again next time.
+
+The choice changes only what Donut shows and which defaults it starts with. No model is told which version is in use or anything about who is asking: the same message produces the same prompts in both, and a test checks it.
+
+**Auto** picks the soloist's model for each conversation from how difficult its first request is. Simple mode turns it on; in complex mode, choose `auto` at the end of the `/soloist` list (or `/soloist auto`).
+
+- **Rating.** For the first message of a conversation, a classifier model rates the request from 1 to 10 against a written rubric, leaning to the higher score when unsure. It runs in a throwaway read-only session outside the conversation, sees only the first 4,000 characters of the request, and is told nothing else.
+- **Choosing.** Auto keeps an ordered list of models, cheapest first, each with the highest score it handles. The conversation gets the first model whose limit covers the score, and the transcript and status line show it (`auto → sonnet · 4/10`).
+- **Staying.** The model is fixed for the rest of the conversation. `/clear` starts a new conversation, which is rated afresh. A resumed conversation keeps the model it had.
+- **`/harder`** moves the conversation one model up the list when an answer falls short. The conversation carries over, as with any model switch.
+- **`/routing`** shows the list, the scores each model takes, the classifier, and what this conversation was rated.
+- **When rating fails** (no answer, an error, a timeout), auto uses the middle model of the list. Ctrl+C while a request is being rated sends nothing.
+- **Choosing a model yourself** with `/model` or `/soloist` turns auto off until you choose `auto` again.
+
+By default the list is built from the models your configured Claude and Codex accounts offer. Donut orders them by name alone (`haiku`, `mini`, `nano` and the like are small; `opus`, `pro`, `max` and the like are large; higher version numbers are stronger) and spreads the scores evenly. That order is a guess, so check it with `/routing`. To state it exactly, or to include local and other models, write it in `~/.config/donut/config.json`:
+
+```json
+"routing": {
+  "models": [
+    {"alias": "claude", "model": "haiku", "up_to": 3},
+    {"alias": "codex", "model": "gpt-6.1-mini", "up_to": 5},
+    {"alias": "claude", "model": "sonnet", "up_to": 8},
+    {"alias": "claude", "model": "opus", "up_to": 10}
+  ],
+  "classifier": {"alias": "claude", "model": "opus", "effort": "low"}
+}
+```
+
+Each `alias` is one of your configured aliases, and an entry may also set `effort`. The last model always takes up to 10. Without `classifier`, the strongest model in the list rates requests, at low effort. A new model is one more line in the list.
+
+Every decision is appended to `routing.jsonl` in Donut's state folder (`~/.local/state/donut/`): the score, the model chosen, its place in the list, whether the fallback was used, and each `/harder`. The request text is never written. Counting how often `/harder` follows a score shows whether the limits are set well.
+
 ## How the loop works
 
 ```mermaid

@@ -137,6 +137,7 @@ class TerminalEffortTests(unittest.IsolatedAsyncioTestCase):
         }
         save(config)
         Donut.AUTO_REFRESH_QUOTAS = False
+        Donut.ASK_INTERFACE = False
         self.patch = patch("donut.terminal.install")
         self.patch.start()
         self.addCleanup(self.patch.stop)

@@ -198,6 +198,7 @@ class TerminalPonytailTests(unittest.IsolatedAsyncioTestCase):
         from donut.terminal import Donut
 
         Donut.AUTO_REFRESH_QUOTAS = False
+        Donut.ASK_INTERFACE = False
         app = Donut(self.project)
         self.calls = []
 
