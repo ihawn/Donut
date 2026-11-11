@@ -1519,15 +1519,17 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         app = self.make_app()
         async with app.run_test(size=(160, 40)) as pilot:
             await pilot.pause()
+            # On with no setting at all: a new Claude conversation gets the browser tools, a review one never.
             self.assertNotIn("chrome", str(app.query_one("#status").render()))
+            self.assertTrue(app.chrome_on)
             await self.send(pilot, app, "/chrome")
-            self.assertIs(app.config.get("chrome"), True)
-            self.assertIs(load().get("chrome"), True)  # Saved for the next window.
-            self.assertIn("chrome", str(app.query_one("#status").render()))
+            self.assertIs(app.config.get("chrome"), False)
+            self.assertIs(load().get("chrome"), False)  # Saved for the next window.
+            self.assertIn("chrome off", str(app.query_one("#status").render()))
             await self.send(pilot, app, "/chrome maybe")
-            self.assertIs(app.config.get("chrome"), True)
-            await self.send(pilot, app, "/chrome off")
-            self.assertIs(load().get("chrome"), False)
+            self.assertIs(app.config.get("chrome"), False)
+            await self.send(pilot, app, "/chrome on")
+            self.assertIs(load().get("chrome"), True)
             self.assertNotIn("chrome", str(app.query_one("#status").render()))
 
     async def test_verbosity_changes_what_is_shown_never_what_is_sent(self):
