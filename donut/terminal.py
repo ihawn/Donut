@@ -17,7 +17,7 @@ import time
 from urllib.parse import unquote
 from rich.style import Style
 from rich.text import Text
-from textual import events, work
+from textual import work
 from textual.message import Message
 from textual.app import App
 from textual.binding import Binding
@@ -605,9 +605,21 @@ def dropped_images(text, project):
     """Absolute paths if the whole paste is existing image files (escaped, quoted or file:// form), else []."""
     text = text.strip()
     try:
-        parts = [unquote(text[7:])] if text.startswith("file://") else shlex.split(text)
+        if text.startswith("file://"):
+            parts = [unquote(text[7:])]
+        elif os.name == "nt":
+            # A backslash separates folders on Windows, so it is not an escape: only quotes group a path there.
+            parts = [part.strip("\"'") for part in shlex.split(text, posix=False)]
+        else:
+            parts = shlex.split(text)
     except ValueError:
         parts = [text]
+    whole = text.strip("\"'")
+    try:
+        if (Path(project) / os.path.expanduser(whole)).is_file():
+            parts = [whole]  # One path, even with spaces that nothing quoted or escaped.
+    except (OSError, ValueError):
+        pass  # Too long or not a possible file name (pasted image data, for example): not one path.
     paths = []
     for part in parts:
         path = Path(project) / os.path.expanduser(part)  # absolute parts replace project
