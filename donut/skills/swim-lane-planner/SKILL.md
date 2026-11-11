@@ -33,7 +33,7 @@ Use these sections:
 - Out of scope
 - Completion notes: placeholder for the worker's Changes, Tests, Deviations and Open issues.
 
-Do not authorize commits, pushes, installs or external mutations unless the user requested them. Use project-specific skills only when relevant. Do not copy unrelated project rules into tickets. End with a brief ticket list and any unresolved assumptions.
+Do not authorize commits, pushes, installs or external mutations unless the user requested them. When the user asks for a branch or a pull request, say so in the ticket with the branch name and the base branch: the worker may then branch, commit, push that branch and open the pull request, but never commit on or push to `main` or `master`. Use project-specific skills only when relevant. Do not copy unrelated project rules into tickets. End with a brief ticket list and any unresolved assumptions.
 
 ## Recovery
 
