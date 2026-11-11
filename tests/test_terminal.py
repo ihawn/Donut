@@ -1497,6 +1497,14 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.event("task", {"id": "a1", "state": "running", "kind": "agent", "description": "Explore"})
             await pilot.pause()
             self.assertIn("⏳ 2 shells running · 1 agent running", str(app.query_one("#status").render()))
+            # Each one has its own line above the prompt, with what it is and how long it has run.
+            running = app.query_one("#background")
+            self.assertTrue(running.has_class("-running"))
+            shown = str(running.render())
+            self.assertIn("⏳ shell running  Poll the build · 0s", shown)
+            self.assertIn("⏳ agent running  Explore", shown)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertEqual(body.count("Background shell started  Poll the build"), 1)
             app.event("task", {"id": "t1", "state": "completed"})
             app.event("task", {"id": "t1", "state": "completed"})  # Reported twice: counted once.
             app.event("task", {"id": "a1", "state": "killed"})
@@ -1505,6 +1513,10 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
             self.assertEqual(body.count("Background shell completed  Poll the build"), 1)
             self.assertIn("Background agent killed  Explore", body)
+            self.assertNotIn("Poll the build", str(running.render()))
+            app.event("task", {"id": "t2", "state": "completed"})
+            await pilot.pause()
+            self.assertFalse(running.has_class("-running"))  # Nothing left: the line goes away.
 
     async def test_the_cursor_blinks_only_in_the_active_window(self):
         from textual import events
