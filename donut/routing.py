@@ -5,7 +5,7 @@ A classifier model rates the first message from 1 to 10. Donut then uses the fir
 up the list. The list comes from "routing" in the configuration, or is built from the models the configured
 Claude and Codex accounts offer.
 
-The classifier sees only the request. Nothing about who is asking, or which Donut profile is in use, is sent.
+The classifier sees only the request. Nothing about who is asking, or whether Donut is in simple or complex mode, is sent.
 """
 
 import json

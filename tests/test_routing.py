@@ -10,6 +10,7 @@ from donut import routing
 from donut.terminal import Donut, Draft, RichLog, Static
 
 Donut.AUTO_REFRESH_QUOTAS = False
+Donut.ASK_INTERFACE = False  # The first-open question has its own test.
 
 
 class RuleTests(unittest.TestCase):
@@ -70,7 +71,7 @@ class RuleTests(unittest.TestCase):
         self.assertNotIn("THE END", prompt)
         self.assertLess(len(prompt), routing.REQUEST_LIMIT + 2500)
         self.assertIn("<request>\nfix the typo\n</request>", routing.classifier_prompt("fix the typo"))
-        for word in ("business", "engineer", "profile"):
+        for word in ("simple mode", "complex mode", "business", "engineer"):
             self.assertNotIn(word, routing.RUBRIC.lower())  # Who is asking is never part of it.
 
 
@@ -140,7 +141,7 @@ class RoutingSetup(unittest.IsolatedAsyncioTestCase):
             "roles": {"solo": {"alias": "auto", "model": ""}},
         }
         if self.profile:
-            self.config["profile"] = self.profile
+            self.config["interface"] = self.profile
         Provider.made, Provider.score = [], "2"
         for item in (
             patch("donut.terminal.load", return_value=self.config),
@@ -274,10 +275,10 @@ class AutoTests(RoutingSetup):
             self.assertIn("Requests are rated by opus at low effort", body)
 
 
-class BusinessProfileTests(RoutingSetup):
-    profile = "business"
+class SimpleModeTests(RoutingSetup):
+    profile = "simple"
 
-    async def test_the_business_profile_is_one_conversation_with_auto(self):
+    async def test_simple_mode_is_one_conversation_with_auto(self):
         from donut.config import load
 
         async with self.app.run_test(size=(140, 40)) as pilot:
@@ -286,7 +287,7 @@ class BusinessProfileTests(RoutingSetup):
             names = [row[0] for row in self.app.slash_rows()]
             for hidden in ("/plan", "/work", "/review", "/planner", "/worker", "/reviewer", "/soloist", "/session"):
                 self.assertNotIn(hidden, names)
-            for shown in ("/harder", "/profile", "/model", "/clear", "/resume"):
+            for shown in ("/harder", "/complex", "/model", "/clear", "/resume"):
                 self.assertIn(shown, names)
             status = self.app.query_one("#status", Static).render().plain
             self.assertIn("model auto", status)
@@ -296,24 +297,65 @@ class BusinessProfileTests(RoutingSetup):
             self.assertNotIn("soloist", self.app.query_one(Draft).placeholder)
             await self.send(pilot, "/plan")
             self.assertEqual(self.app.mode, "solo")
-            self.assertIn("/plan belongs to the engineer profile", self.body())
+            self.assertIn("/plan is part of complex mode. /complex shows it.", self.body())
             await pilot.press("f3")
             await pilot.pause(0.1)
             self.assertEqual(self.app.mode, "solo")
             await self.send(pilot, "summarise the notes file")
             self.assertEqual(self.talkers()[-1].profile["model"], "haiku")
-            # The user can switch profiles; the engineer interface comes back.
-            await self.send(pilot, "/profile engineer")
-            self.assertFalse(self.app.business)
-            self.assertIn("/plan", [row[0] for row in self.app.slash_rows()])
+            # The user can switch; everything comes back.
+            await self.send(pilot, "/complex")
+            self.assertFalse(self.app.simple)
+            names = [row[0] for row in self.app.slash_rows()]
+            self.assertIn("/plan", names)
+            self.assertIn("/simple", names)
+            self.assertNotIn("/complex", names)
             self.assertIn("planner", self.app.query_one("#status", Static).render().plain)
-            self.assertEqual(load()["profile"], "engineer")
-            await self.send(pilot, "/profile business")
-            self.assertTrue(self.app.business and self.app.auto)
-            self.assertEqual(load()["profile"], "business")
+            self.assertEqual(load()["interface"], "complex")
+            await self.send(pilot, "/simple")
+            self.assertTrue(self.app.simple and self.app.auto)
+            self.assertEqual(load()["interface"], "simple")
 
 
-class ProfileIsOnlyInterfaceTests(unittest.IsolatedAsyncioTestCase):
+class FirstOpenTests(RoutingSetup):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.config["roles"] = {}
+        asking = patch.object(Donut, "ASK_INTERFACE", True)
+        asking.start()
+        self.addCleanup(asking.stop)
+        self.app = Donut(self.root)
+
+    async def test_the_first_open_asks_simple_or_complex_once(self):
+        from donut.config import load
+        from donut.terminal import Menu
+
+        async with self.app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.2)
+            menu = self.app.query_one(Menu)
+            self.assertTrue(menu.is_open)
+            self.assertEqual(menu.border_title, "How do you want to use Donut?")
+            self.assertEqual(
+                [(row[0], row[2]) for row in menu.rows],
+                [
+                    ("Simple mode", "I just want to use this like I would use Claude Code or Codex"),
+                    ("Complex mode", "I know what I'm doing. Show all complex features"),
+                ],
+            )
+            await pilot.press("enter")  # Simple mode is first.
+            await pilot.pause(0.2)
+            self.assertTrue(self.app.simple and self.app.auto)
+            self.assertEqual(self.app.mode, "solo")
+            self.assertEqual(load()["interface"], "simple")
+        # Once answered, it is not asked again.
+        self.config["interface"] = "simple"
+        again = Donut(self.root)
+        async with again.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.2)
+            self.assertFalse(again.query_one(Menu).is_open)
+
+
+class InterfaceOnlyTests(unittest.IsolatedAsyncioTestCase):
     async def prompts(self, profile):
         case = RoutingSetup("run")
         case.profile = profile
@@ -321,7 +363,7 @@ class ProfileIsOnlyInterfaceTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with case.app.run_test(size=(140, 40)) as pilot:
                 await pilot.pause()
-                if profile != "business":
+                if profile != "simple":
                     await case.send(pilot, "/solo")
                 await case.send(pilot, "draft a reply to the supplier")
                 await case.send(pilot, "/harder")
@@ -330,14 +372,14 @@ class ProfileIsOnlyInterfaceTests(unittest.IsolatedAsyncioTestCase):
         finally:
             case.doCleanups()
 
-    async def test_models_are_told_the_same_under_both_profiles(self):
-        engineer = await self.prompts("engineer")
-        business = await self.prompts("business")
-        self.assertEqual(engineer, business)
-        self.assertEqual(len(engineer), 2)  # The rater, then the conversation.
-        for _, _, prompts in business:
+    async def test_models_are_told_the_same_in_simple_and_complex_mode(self):
+        complex_mode = await self.prompts("complex")
+        simple_mode = await self.prompts("simple")
+        self.assertEqual(complex_mode, simple_mode)
+        self.assertEqual(len(complex_mode), 2)  # The rater, then the conversation.
+        for _, _, prompts in simple_mode:
             for prompt in prompts:
-                for word in ("business", "engineer", "profile"):
+                for word in ("simple mode", "complex mode", "business", "engineer"):
                     self.assertNotIn(word, prompt.lower())
 
 

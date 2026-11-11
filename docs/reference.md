@@ -51,16 +51,18 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
 
 **Compatibility boundary:** this release supplies a shared terminal and provider sessions; it does not reproduce every upstream command, plugin manager, interaction type, or clipboard behavior. Unsupported Codex interaction requests are rejected visibly rather than auto-approved. Native-only features remain accessible through `/native`. Qwen/local turns use Qwen's native saved-session mechanism; API-compatible connections use Qwen as their agent engine. Legacy CLI modes below remain supported.
 
-## Profiles and auto
+## Simple mode, complex mode and auto
 
-Donut has two versions of its interface. Setup asks once which you want, and `/profile [engineer|business]` switches at any time.
+Donut has two versions of its interface. The first time it opens, it asks which you want, with a line beside each:
 
-- **Engineer** is everything described above: planner, worker, reviewer and tickets, with a model you choose for each role.
-- **Business** is one conversation. Donut starts in solo mode and stays there, the model is `auto`, and the `/` menu, status line and welcome leave out the planner, worker, reviewer and ticket commands. `/help` lists what is there.
+- **Simple mode**: "I just want to use this like I would use Claude Code or Codex". One conversation. Donut starts in solo mode and stays there, the model is `auto`, and the `/` menu, status line and welcome leave out the planner, worker, reviewer and ticket commands. `/help` lists what is there.
+- **Complex mode**: "I know what I'm doing. Show all complex features". Everything described above: planner, worker, reviewer and tickets, with a model you choose for each role.
 
-The profile changes only what Donut shows and which defaults it starts with. No model is told which profile is in use or anything about who is asking: the same message produces the same prompts under both, and a test checks it.
+The answer is saved, so Donut asks once. `/simple` and `/complex` switch at any time. Closing the question without choosing shows everything and asks again next time.
 
-**Auto** picks the soloist's model for each conversation from how difficult its first request is. The business profile turns it on; in the engineer profile, choose `auto` at the end of the `/soloist` list (or `/soloist auto`).
+The choice changes only what Donut shows and which defaults it starts with. No model is told which version is in use or anything about who is asking: the same message produces the same prompts in both, and a test checks it.
+
+**Auto** picks the soloist's model for each conversation from how difficult its first request is. Simple mode turns it on; in complex mode, choose `auto` at the end of the `/soloist` list (or `/soloist auto`).
 
 - **Rating.** For the first message of a conversation, a classifier model rates the request from 1 to 10 against a written rubric, leaning to the higher score when unsure. It runs in a throwaway read-only session outside the conversation, sees only the first 4,000 characters of the request, and is told nothing else.
 - **Choosing.** Auto keeps an ordered list of models, cheapest first, each with the highest score it handles. The conversation gets the first model whose limit covers the score, and the transcript and status line show it (`auto → sonnet · 4/10`).

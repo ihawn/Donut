@@ -7,6 +7,7 @@ from donut.terminal import Donut, Draft, Menu, OptionList, RichLog, Static
 
 # Never start real providers from the background usage refresh during tests.
 Donut.AUTO_REFRESH_QUOTAS = False
+Donut.ASK_INTERFACE = False  # The first-open question has its own test.
 
 
 def setUpModule():

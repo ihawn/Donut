@@ -242,12 +242,13 @@ class Transcript(RichLog, can_focus=False):
 
 # Commands that only show something (or change only what is shown), so they run at once even mid-turn.
 INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity", "/routing"}
-# What the business profile leaves out of the interface: the roles, modes and tickets engineers work with.
-PROFILES = {
-    "engineer": "Planner, worker, reviewer and tickets, with a model you choose for each",
-    "business": "One conversation; Donut picks the model for each request",
+# The two versions of the interface, asked about the first time Donut opens: (label, what it says beside it).
+INTERFACES = {
+    "simple": ("Simple mode", "I just want to use this like I would use Claude Code or Codex"),
+    "complex": ("Complex mode", "I know what I'm doing. Show all complex features"),
 }
-ENGINEER_COMMANDS = {
+# What simple mode leaves out: the roles, modes and tickets.
+COMPLEX_COMMANDS = {
     "/plan",
     "/work",
     "/review",
@@ -258,7 +259,7 @@ ENGINEER_COMMANDS = {
     "/soloist",
     "/session",
 }
-BUSINESS_PLACEHOLDER = "Ask anything or say what to change, or type / for commands"
+SIMPLE_PLACEHOLDER = "Ask anything or say what to change, or type / for commands"
 # Commands that talk to the current model's provider, so they need a model to have been picked.
 NEEDS_MODEL = {"/plugin", "/mcp", "/context", "/login", "/native", "/effort"}
 
@@ -295,7 +296,8 @@ COMMANDS = [
     ("/model", "Choose the model for the current mode"),
     ("/harder", "Auto picked too small a model: move this conversation one model up"),
     ("/routing", "Show the models auto chooses from and what it picked"),
-    ("/profile", "Engineer or business: which version of Donut's interface you see"),
+    ("/simple", "Simple mode: use Donut like Claude Code or Codex; it picks the model for you"),
+    ("/complex", "Complex mode: show every feature, with the planner, worker, reviewer and tickets"),
     ("/resume", "Resume an earlier conversation in its mode, model and tickets session"),
     ("/session", "Switch this window's tickets folder, .donut/<session>/, or start a new one"),
     ("/rename", "Name this session; its tickets folder becomes .donut/<name>/"),
@@ -599,6 +601,7 @@ class Donut(App):
     TITLE = "Donut"
     QUOTA_REFRESH_SECONDS = 300
     AUTO_REFRESH_QUOTAS = True  # Tests turn this off so no provider is started in the background.
+    ASK_INTERFACE = True  # Ask simple or complex the first time Donut opens; tests turn this off.
     ENABLE_COMMAND_PALETTE = False  # The inline slash menu replaces Textual's palette.
     CSS = f"""
     Screen {{background: #101820;}}
@@ -659,9 +662,10 @@ class Donut(App):
         self.route = None  # {"index", "score", "harder"} once this conversation's model is picked.
         self.cancelled = False
         self.steps = None  # The models auto chooses from, cheapest first; found on first use.
-        # The profile changes only what Donut shows and which defaults it starts with, never what a model is told.
-        self.profile_name = self.config.get("profile") if self.config.get("profile") in PROFILES else "engineer"
-        if self.business:
+        # Simple or complex changes only what Donut shows and which defaults it starts with, never what a model
+        # is told. Until the user has chosen (asked the first time Donut opens), everything is shown.
+        self.interface = self.config.get("interface") if self.config.get("interface") in INTERFACES else "complex"
+        if self.simple:
             self.mode = "solo"
         # Who reviews each finished ticket: "planner" follows the planner (the default), "off" disables review,
         # and "chosen" keeps the alias and model picked with /review whatever the planner becomes.
@@ -737,6 +741,8 @@ class Donut(App):
         if not self.config.get("aliases"):
             self.say(Text("No accounts configured. Exit and run donut setup.", style=CORAL))
         self.query_one(Draft).focus()
+        if self.ASK_INTERFACE and self.config.get("aliases") and self.config.get("interface") not in INTERFACES:
+            self.run_worker(self.first_open(), group="first-open")
         self.set_interval(0.1, self.tick)
         if self.AUTO_REFRESH_QUOTAS:
             self.refresh_quotas_soon(connect=True)
@@ -801,15 +807,15 @@ class Donut(App):
         return (f"{alias}@{purpose}" if purpose else alias, profile.get("model"))
 
     @property
-    def business(self):
-        return self.profile_name == "business"
+    def simple(self):
+        return self.interface == "simple"
 
     def check_action(self, action, parameters):
-        """The business profile has one mode, so the mode key is neither shown nor active."""
-        return not (action == "modes" and self.business)
+        """Simple mode has one mode, so the mode key is neither shown nor active."""
+        return not (action == "modes" and self.simple)
 
     def placeholder(self):
-        return BUSINESS_PLACEHOLDER if self.business else MODE_PLACEHOLDERS[self.mode]
+        return SIMPLE_PLACEHOLDER if self.simple else MODE_PLACEHOLDERS[self.mode]
 
     def set_mode(self, mode):
         self.mode = mode
@@ -857,7 +863,7 @@ class Donut(App):
         if self.running:
             role, alias, profile = self.running
             line.append(model_name(profile, alias), style=f"bold {ORANGE}")
-            if not self.business:
+            if not self.simple:
                 line.append(f"  {ROLE_TITLES.get(role, role)}", style=DIM)
             line.append(f"  is {self.activity or 'thinking'}", style=GRAY)
             if self.detail:
@@ -879,7 +885,7 @@ class Donut(App):
         title = Text("  DONUT", style=f"bold {ORANGE}")
         title.append("  /  " + release_version(), style=CORAL)
         title.append("   " + str(self.project), style=DIM)
-        if self.business:
+        if self.simple:
             self.say(title)
             self.say(Text("  Ask for what you need. Donut picks the model for each conversation.", style=GRAY))
             hints = (
@@ -927,9 +933,9 @@ class Donut(App):
             )
         ]
         running_role = self.running[0] if self.busy and self.running else None
-        # The business profile shows one entry, the model in use, in place of the mode badge and the four roles.
-        roles = {"solo": "model"} if self.business else ROLE_TITLES
-        if self.business:
+        # Simple mode shows one entry, the model in use, in place of the mode badge and the four roles.
+        roles = {"solo": "model"} if self.simple else ROLE_TITLES
+        if self.simple:
             entries = []
         for role, title in roles.items():
             alias, profile = self.selected.get(role), self.profiles.get(role, {})
@@ -970,7 +976,7 @@ class Donut(App):
         if self.verbosity != "normal":
             permission.append(f"   {self.verbosity}", style=DIM)
         entries.append(permission)
-        if not self.business:
+        if not self.simple:
             session = Text("session ", style=DIM)
             session.append(self.session_label(), style=f"bold {ORANGE}")
             entries.append(session)
@@ -1073,7 +1079,7 @@ class Donut(App):
         rows = [
             (name, name, description)
             for name, description in COMMANDS
-            if not (self.business and name in ENGINEER_COMMANDS)
+            if not (self.simple and name in COMPLEX_COMMANDS) and name != "/" + self.interface
         ]
         session = self.sessions.get(self.session_key(self.selected[self.role], self.profiles[self.role], self.purpose))
         if isinstance(session, ClaudeSession):
@@ -1496,7 +1502,7 @@ class Donut(App):
 
     def action_modes(self):
         """F3 cycles plan, work, review and solo."""
-        if not self.busy and not self.business:
+        if not self.busy and not self.simple:
             self.execute("/" + {"plan": "work", "work": "review", "review": "solo", "solo": "plan"}[self.mode])
 
     async def start_fresh(self):
@@ -1633,7 +1639,7 @@ class Donut(App):
                 self.turn_finished()
             return
         unset = not self.selected[self.role] and not (self.role == "solo" and self.auto)
-        if unset and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto", "/profile")):
+        if unset and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto", "/simple", "/complex")):
             self.say("Run donut setup to configure an account first.")
             return
         self.busy = True
@@ -1664,16 +1670,16 @@ class Donut(App):
     async def command(self, text):
         words = shlex.split(text)
         name, args = words[0], words[1:]
-        if self.business and name in ENGINEER_COMMANDS:
-            self.say(f"  {name} belongs to the engineer profile. /profile engineer shows it.", DIM)
+        if self.simple and name in COMPLEX_COMMANDS:
+            self.say(f"  {name} is part of complex mode. /complex shows it.", DIM)
             return
         if name in NEEDS_MODEL and self.role == "solo" and self.auto and not self.profiles.get("solo"):
             self.say(f"  Send a message first: auto picks the model then, and {name} applies to it.", DIM)
             return
         if name in ("/exit", "/quit"):
             await self.action_quit()
-        elif name == "/profile":
-            await self.choose_profile(args[0] if args else None)
+        elif name in ("/simple", "/complex"):
+            await self.set_interface(name[1:])
         elif name == "/harder":
             await self.harder()
         elif name == "/routing":
@@ -1801,13 +1807,13 @@ class Donut(App):
         elif name == "/copy":
             self.copy_text(self.last_answer)
             self.notify("Copied last response (terminal clipboard support required).")
-        elif name == "/help" and self.business:
+        elif name == "/help" and self.simple:
             self.say(
-                "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /profile [engineer|business] · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued."
+                "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued."
             )
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /profile [engineer|business] · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -2255,7 +2261,7 @@ class Donut(App):
     async def resume_conversation(self, record_id=None):
         """Reopen an earlier conversation: switch to its mode and model, then continue the provider's session."""
         records = conversations.for_project(self.project)
-        if self.business:
+        if self.simple:
             records = [record for record in records if record.get("mode") == "solo"]
         if not records:
             self.say("No earlier conversations in this project yet.", DIM)
@@ -2560,7 +2566,7 @@ class Donut(App):
             rows = await self.model_rows()
             if role == "solo" and rows:
                 rows.append(("auto  picks a model for each conversation from how hard its request is", automatic))
-            title = "Model" if self.business else "Account and model for the " + ROLE_TITLES[role]
+            title = "Model" if self.simple else "Account and model for the " + ROLE_TITLES[role]
             selected = await self.choose(title, rows) if rows else None
         if not selected:
             return
@@ -2627,7 +2633,7 @@ class Donut(App):
             remember_role("solo", routing.AUTO, "")
         except (ValueError, OSError) as error:
             self.say(f"Model choice applies to this session only: {error}", DIM)
-        line = Text("  Soloist: " if not self.business else "  Model: ", style=GRAY)
+        line = Text("  Soloist: " if not self.simple else "  Model: ", style=GRAY)
         line.append("auto", style=f"bold {ORANGE}")
         self.say(line)
         self.say(
@@ -2801,38 +2807,43 @@ class Donut(App):
         elif self.route and self.route.get("score"):
             self.say(f"  This conversation was rated {self.route['score']}/10.", DIM)
 
-    async def choose_profile(self, name=None):
-        """/profile [engineer|business]: which version of the interface is shown. Models are told nothing of it."""
-        if name is None:
-            rows = [
-                (f"{key}" + ("  · now" if key == self.profile_name else ""), key, description)
-                for key, description in PROFILES.items()
-            ]
-            name = await self.choose("Profile", rows)
-            if name is None:
-                return
-        if name not in PROFILES:
-            raise ValueError("Use /profile engineer or /profile business.")
-        self.profile_name = name
+    async def first_open(self):
+        """The first time Donut opens, ask which version of the interface to show. Asked once and saved."""
+        rows = [(label, key, description) for key, (label, description) in INTERFACES.items()]
+        chosen = await self.choose("How do you want to use Donut?", rows)
+        if chosen:
+            self.interface = chosen
+            self.query_one(RichLog).clear()  # Nothing has been said yet: greet again in the chosen version.
+            self.welcome()
+            await self.set_interface(chosen)
+        else:
+            self.say("  Showing everything for now; Donut asks again next time. /simple and /complex switch.", DIM)
+
+    async def set_interface(self, name):
+        """/simple and /complex: which version of the interface is shown. Models are told nothing of it."""
+        self.interface = name
         try:
             config = load()
-            config["profile"] = name
+            config["interface"] = name
             save(config)
         except (ValueError, OSError) as error:
-            self.say(f"Profile applies to this session only: {error}", DIM)
-        self.config["profile"] = name
+            self.say(f"This applies to this session only: {error}", DIM)
+        self.config["interface"] = name
         self.refresh_bindings()
-        line = Text("  Profile: ", style=GRAY)
-        line.append(name, style=f"bold {ORANGE}")
-        line.append("  " + PROFILES[name], style=DIM)
-        self.say(line)
-        if self.business:
+        label, description = INTERFACES[name]
+        line = Text("  " + label, style=f"bold {ORANGE}")
+        if self.simple:
+            line.append(
+                "  One conversation; Donut picks the model for each request. /complex shows everything.", style=DIM
+            )
+            self.say(line)
             self.set_mode("solo")
             if not self.auto:
                 self.set_auto()
         else:
+            line.append("  Planner, worker, reviewer and tickets are shown. /simple hides them again.", style=DIM)
+            self.say(line)
             self.set_mode(self.mode)
-            self.say("  /plan, /work, /review and the role commands are back. Your models are unchanged.", DIM)
         self.status()
 
     async def usage(self):

@@ -102,7 +102,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(files, [str(self.root / "model.gguf")])
 
     def test_interactive_setup(self):
-        answers = iter(["codex", "n", "", "n", "planner", "", "n", "planner", ""])
+        answers = iter(["codex", "n", "", "n", "planner", "", "n", "planner"])
         with (
             patch("builtins.input", side_effect=lambda _: next(answers)),
             patch("shutil.which", return_value="/bin/codex"),
@@ -116,13 +116,11 @@ class SetupTests(unittest.TestCase):
         saved = config.load()
         self.assertEqual(saved["planner"], "planner")
         self.assertEqual(saved["aliases"]["planner"]["engine"], "codex")
-        self.assertEqual(saved["profile"], "engineer")  # Asked once; Enter keeps the engineer interface.
-        self.assertNotIn("roles", saved)
 
     def test_local_orchestrator_setup_never_requests_cloud_login(self):
         import subprocess
 
-        answers = iter(["ollama", "local-model", "n", "y", "local-planner", "", "n", "local-planner", "business"])
+        answers = iter(["ollama", "local-model", "n", "y", "local-planner", "", "n", "local-planner"])
         result = subprocess.CompletedProcess(
             ["ollama", "list"], 0, "NAME ID SIZE MODIFIED\nlocal-model abc 1GB now\n", ""
         )
@@ -139,8 +137,6 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(output.getvalue().endswith("SETUP COMPLETE\nTry running `donut`\n"))
         saved = config.load()
         self.assertEqual(saved["planner"], "local-planner")
-        self.assertEqual(saved["profile"], "business")
-        self.assertEqual(saved["roles"]["solo"], {"alias": "auto", "model": ""})  # Business starts on auto.
         self.assertEqual(saved["aliases"]["local-planner"]["engine"], "ollama")
         self.assertEqual([call.args[0] for call in calls.call_args_list], [["ollama", "list"]])
 
@@ -163,7 +159,7 @@ class SetupTests(unittest.TestCase):
     def test_existing_aliases_preserved_when_selecting_roles(self):
         aliases = {"planner": {"engine": "codex"}, "fast": {"engine": "ollama", "model": "local"}}
         config.save({"aliases": aliases, "planner": "planner", "default_model": "fast"})
-        answers = iter(["1", "", "n", "2", ""])
+        answers = iter(["1", "", "n", "2"])
         with (
             patch("builtins.input", side_effect=lambda _: next(answers)),
             patch("donut.setup.discover", return_value=(["local"], [])),
@@ -199,7 +195,7 @@ class SetupTests(unittest.TestCase):
     def test_shell_alias_selected_as_planner(self):
         personal = str((self.root / ".claude-personal").resolve())
         discovered = {"claude-personal": {"engine": "claude", "model": "", "claude_config_dir": personal}}
-        answers = iter(["claude-personal", "n", "opus", "n", "", "n", "claude-personal", ""])
+        answers = iter(["claude-personal", "n", "opus", "n", "", "n", "claude-personal"])
         with (
             patch("builtins.input", side_effect=lambda _: next(answers)),
             patch("shutil.which", return_value="/bin/claude"),
