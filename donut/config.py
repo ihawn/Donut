@@ -48,8 +48,9 @@ def use_profile(name):
         os.environ.pop(key, None)
 
 
-def config_path():
-    folder = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "donut"
+def config_path(home=None):
+    """This profile's configuration file; home stands in for XDG_CONFIG_HOME."""
+    folder = Path(home or os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "donut"
     name = profile_name()
     return folder / "config.json" if name == "default" else folder / "profiles" / f"{name}.json"
 
@@ -81,7 +82,7 @@ def check_project(project):
     if profile_name() not in allowed:
         raise ValueError(
             f"This project allows only the {' and '.join(allowed) or 'no'} profile, not {profile_name()} "
-            f"({path}). Start Donut with --profile NAME."
+            f'({path}). Open another folder with -p PATH, or add "{profile_name()}" to that file\'s list.'
         )
 
 
