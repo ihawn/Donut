@@ -1517,7 +1517,12 @@ class Donut(App):
         """Ponytail's band for the current mode's conversation, when Ponytail is installed for its login."""
         widget = self.query_one("#band", Static)
         profile = self.profiles.get(self.role, {})
-        if not profile or self.focus_view or self.config.get("ponytail_band") is False or not self.has_ponytail(profile):
+        if (
+            not profile
+            or self.focus_view
+            or self.config.get("ponytail_band") is False
+            or not self.has_ponytail(profile)
+        ):
             widget.display = False
             return
         session = self.sessions.get(self.session_key(self.selected[self.role], profile, self.purpose))
