@@ -133,6 +133,36 @@ donut setup -p ../another-project
 
 Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.config/donut/config.json`, mode 0600). It contains aliases and **environment variable names**, never API key values. Provider CLIs own their own OAuth credentials. Claude setup explicitly selects its login/configuration folder (for example `~/.claude` or `~/.claude-personal`); that folder is used for both login and execution. Setup also offers simple shell aliases from `.zshrc`, `.bashrc`, and `.bash_profile`, including `claude-personal` defined with `CLAUDE_CONFIG_DIR`. Selecting one imports its login folder without executing shell startup code. Existing Donut aliases take precedence. Shell functions, aliases with extra flags or commands, and dynamically constructed paths are not imported; use the provider/login-folder choices for those. Naming a new Donut alias alone does not select an account. Subscription login and API billing are different; Grok uses API authentication here, not a browser-chat subscription.
 
+## Profiles
+
+A profile keeps one set of accounts apart from another, for example a work account on Amazon Bedrock and a personal subscription. `donut` uses the default profile. `donut --profile personal` (or `DONUT_PROFILE=personal`) uses the profile named `personal`, and only that one: its window cannot select, list or route to another profile's aliases.
+
+| | Default profile | Profile `NAME` |
+| --- | --- | --- |
+| Configuration | `~/.config/donut/config.json` | `~/.config/donut/profiles/NAME.json` |
+| Conversations (`/resume`) and logs | `~/.local/state/donut/` | `~/.local/state/donut/profiles/NAME/` |
+| Tickets in a project | `.donut/SESSION/` | `.donut/profiles/NAME/SESSION/` |
+
+Create a profile with `donut --profile NAME setup`. The file has the same format as `config.json`. Rules for a named profile:
+
+- Every Claude alias must set `claude_config_dir`. Skills, plugins, memory, MCP servers and history live in that folder, so two profiles with different folders do not share them. Donut refuses an alias without one, because it would use `~/.claude`.
+- Donut removes the shell's provider variables before it starts a model: `ANTHROPIC_*` keys and URLs, `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the `AWS_*` credential variables. To use Bedrock in a named profile, set those variables in the `env` block of `settings.json` in that profile's Claude login folder. The default profile keeps the shell's variables as they are.
+- `/project` opens the new window in the same profile, and the status line shows the profile's name.
+
+A project can list the profiles that may open it. Put this in `.donut/config.json` in the project and commit it:
+
+```json
+{ "profiles": ["default"] }
+```
+
+Donut then refuses to open the project with any other profile. A file that Donut cannot read refuses every profile.
+
+Limits you must know:
+
+- A profile separates configuration, not the operating system. Every model runs as your user and can read any file you can read, including the other profile's folders. The project list prevents a mistake; it does not stop a model that edits the file. For a hard boundary, use a different operating system user or machine.
+- Skills and instructions committed in the project (`.claude/`, `CLAUDE.md`, `.donut/skills/`) load for every profile.
+- Codex aliases use `~/.codex` in every profile. Ponytail's ledger (`~/.config/ponytail/band/`) is shared too; it holds the first words of each request.
+
 ## Plan and build
 
 ```sh
