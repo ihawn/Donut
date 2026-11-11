@@ -11,6 +11,7 @@ import tempfile
 import queue
 import threading
 from . import checkpoints, pullrequest
+from .config import state_dir
 from .install_skills import worker_skill
 from .providers import command, activate
 from .platform import process_options, stop_process
@@ -533,7 +534,7 @@ def run_batch(
             raise ValueError(f"{project}: missing {relative(project, lanes)}{lane}; run donut init")
     if checkpoint and not checkpoints.repositories(project):
         raise ValueError(f"{project} is not a git repository; --checkpoint needs one (run git init)")
-    cache = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut"
+    cache = state_dir()
     cache.mkdir(parents=True, exist_ok=True)
     run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=cache))
     print(

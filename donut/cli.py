@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from .config import load, role_choice
+from .config import check_project, load, role_choice, state_dir, use_profile
 from .install_skills import install
 from .providers import validate, activate
 from .runner import run_agent, run_batch
@@ -19,7 +19,7 @@ def plan_session(profile, alias, project, request=None, session=None):
     install(project, Path.home(), session=session)
     lanes = workspace.lanes_dir(project, session)
     folder = workspace.relative(project, lanes)
-    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut"
+    state = state_dir()
     state.mkdir(parents=True, exist_ok=True)
     run = Path(tempfile.mkdtemp(prefix="plan-", dir=state))
     print(
@@ -87,6 +87,12 @@ def main():
         "--session",
         default=argparse.SUPPRESS,
         help="tickets folder .donut/SESSION/ (default: the latest session, else swim_lanes/, else a new session)",
+    )
+    shared.add_argument(
+        "--profile",
+        default=argparse.SUPPRESS,
+        metavar="NAME",
+        help="use the accounts, conversations and tickets of profile NAME only (default: the default profile)",
     )
     parser = argparse.ArgumentParser(
         prog="donut",
@@ -177,6 +183,8 @@ def main():
     try:
         if not project.is_dir():
             raise ValueError(f"Project directory does not exist: {project}")
+        use_profile(getattr(args, "profile", None) or os.environ.get("DONUT_PROFILE"))
+        check_project(project)
         session = getattr(args, "session", None)
         if session is not None and not workspace.valid(session):
             raise ValueError(f"Invalid session name {session!r}: use letters, numbers, '.', '_' or '-'")

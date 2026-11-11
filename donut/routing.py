@@ -10,10 +10,9 @@ The classifier sees only the request. Nothing about who is asking, or whether Do
 
 import json
 import math
-import os
 import re
 import time
-from pathlib import Path
+from .config import state_dir
 
 AUTO = "auto"  # The soloist "model" that turns routing on.
 REQUEST_LIMIT = 4000  # Only the start of a long first message is rated.
@@ -192,7 +191,7 @@ def parse_score(answer):
 
 
 def log_path():
-    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "donut" / "routing.jsonl"
+    return state_dir() / "routing.jsonl"
 
 
 def log(event, **fields):
