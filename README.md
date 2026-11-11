@@ -1,17 +1,6 @@
-```text
-            _.------------._           .-----------------.
-        .-''   *    +    o  ''-.       |  do the thing.  |
-      .'  +    o     *     +    '.     '.  .-------------'
-     /   o  +   .-''''-.     *    \   / .'      .----.
-    |   *      /        \     +    | /.'        | ok |
-    |    +    |          |    o    |            '-. .'
-    |  o   +   \        /    *     |              |/
-     \   *      '-.__.-'  o   +   /           .-''''''-.
-      '.    +    o    *    o    .'           / o   *  + \
-        '-._   *    +   o   _.-'            | +   ()   o |
-            '-.__________.-'                 \ *   o  + /
-                                              '-.____.-'
-```
+<p align="center">
+  <img src="docs/images/mascot.svg" width="558" alt="A roughly drawn donut tells a little donut: do the thing. The little donut says ok.">
+</p>
 
 <h1 align="center">Donut</h1>
 <p align="center"><strong>Your planning model writes the tickets. Your worker model takes them one at a time. Do the thing.</strong></p>
