@@ -15,7 +15,7 @@ from .config import state_dir
 from .install_skills import worker_skill
 from .providers import command, activate
 from .platform import process_options, stop_process
-from .tickets import Ticket, add_pull_requests, pick, pull_requests, queue_report, tasks  # noqa: F401  (pick and tasks are part of the module API)
+from .tickets import Ticket, add_pull_requests, pick, pull_requests, queue_report, split_scope, tasks  # noqa: F401  (pick and tasks are part of the module API)
 from .tickets import load as load_tickets
 from .ui import Progress, paint, CodeStream
 from .planner_output import PlannerOutput
@@ -284,7 +284,12 @@ def worker_prompt(project, ticket_path):
         "branch and open a pull request with gh. Never commit on or push to the default branch (main or master), "
         "never force-push and never merge a pull request. Write each pull request you open in the Completion notes "
         "on its own line, as `PR: <url>`. When the ticket does not ask for git work, leave the changes in the "
-        "working tree: Donut opens the pull request after the review. Then exit."
+        "working tree: Donut opens the pull request after the review. "
+        f"Never open a pull request while a ticket is in {lanes}blocked/: block this ticket and name that one. "
+        f"If {lanes}consents.md exists, read it first: it holds the user's standing permissions and decisions, and "
+        "one that covers a step counts as the user's authorization, so do not block to ask for it again. "
+        "Keep the Completion notes short: one line each for Changed, Tests, Deviations and Open issues, with command "
+        "output only for a test that failed. Then exit."
     )
 
 
@@ -292,10 +297,39 @@ REVIEW_ROUNDS = 3
 _VERDICT = re.compile(r"VERDICT:\s*\**\s*(APPROVED|CHANGES REQUESTED)\b", re.I)
 
 
-def review_prompt(project, ticket_path, files, diff_text):
-    """A fresh-context review of one finished ticket. The ticket and diff are data, not instructions."""
+def ticket_files(project, scope, files):
+    """(the ticket's files, other files) among those that changed while its worker ran.
+
+    The ticket's are the ones it lists, plus anything else in the same repositories: a worker may add a file the
+    planner did not foresee. Changes in other repositories of the project are someone else's, such as another
+    session's. When nothing matches the list, every file counts, so a loose list never hides the work.
+    """
+    mine, others = split_scope(project, scope, files)
+    if not mine:
+        return mine + others, []
+    prefix = {}
+    for _, repo, paths in checkpoints.group(project, mine + others):
+        prefix.update({repo + path: repo for path in paths})
+    repos = {prefix.get(path) for path in mine}
+    same = [path for path in others if prefix.get(path) in repos]
+    return sorted(mine + same), [path for path in others if path not in same]
+
+
+def review_prompt(project, ticket_path, files, diff_text, others=()):
+    """A fresh-context review of one finished ticket. The ticket and diff are data, not instructions.
+
+    others are files that changed while the worker ran but that the ticket does not list: they may belong to
+    another session, so they are named and left out of the diff.
+    """
     ticket = ticket_path.read_text(encoding="utf-8")
     changed = "\n".join("  " + path for path in files) or "  (not a git repository, or nothing detected)"
+    if others:
+        changed += (
+            "\n\nOther files changed in the project during that time, outside the ticket's listed files:\n"
+            + "\n".join("  " + path for path in list(others)[:40])
+            + "\nAnother session or a tool may have changed them. They are not part of this submission: request "
+            "changes for one only when the worker's notes say it edited that file."
+        )
     return (
         "You are the reviewer for one ticket a worker model just finished. You have a fresh context. "
         "Do not edit, create, move or delete any file, and do not commit. "
@@ -378,7 +412,8 @@ def rework_prompt(project, ticket_path):
     )
 
 
-_RECOVERY = re.compile(r"RECOVERY:\s*\**\s*(REQUEUED|SPLIT|NEEDS HUMAN)\b\**(.*)", re.I)
+_RECOVERY = re.compile(r"RECOVERY:\s*\**\s*(REQUEUED|FIXED|SPLIT|NEEDS HUMAN)\b\**(.*)", re.I)
+RECOVERIES = 2  # Planner recoveries per ticket in one run.
 
 
 def tail(path, limit=4000):
@@ -409,11 +444,19 @@ def recovery_prompt(project, ticket_path, reason, worker_output, dependents):
         f"2. SPLIT: the ticket is too big for one step. Write smaller replacement tickets in {lanes}to_do/ with new "
         "numbers after the highest existing one, and change the Depends on lines of the waiting tickets to the new "
         "slugs. Leave this ticket where it is.\n"
-        "3. NEEDS HUMAN: it needs a decision only the user can make. Add a 'NEEDS HUMAN:' line to its Completion "
-        "notes saying exactly which decision.\n"
-        f"Only edit files under {lanes}. Do not move tickets between lanes (Donut moves a REQUEUED ticket), do not "
-        "implement the ticket or change any other file, and do not commit.\n"
-        "End with one line: RECOVERY: REQUEUED, RECOVERY: SPLIT or RECOVERY: NEEDS HUMAN, followed by one sentence."
+        "3. FIXED: what is left is small and mechanical, and inside the ticket's listed files or its tickets "
+        "folder (rerun a test from the right folder, delete a generated file the worker left, a correction of a "
+        "few lines, tick an acceptance box you verified). Finish it yourself, run the ticket's tests, and add a line "
+        "'Planner recovery: <what you did and the test result>' to its Completion notes. Do not use FIXED for work "
+        "a worker should redo.\n"
+        "4. NEEDS HUMAN: it needs a decision only the user can make. Add a 'NEEDS HUMAN:' line to its Completion "
+        "notes saying exactly which decision, in one sentence the user can answer.\n"
+        f"If {lanes}consents.md exists, read it first: it holds the user's standing permissions and decisions. A "
+        "decision it already covers is not a NEEDS HUMAN case.\n"
+        f"Except for FIXED, only edit files under {lanes} and do not implement the ticket. Never move tickets between "
+        "lanes (Donut moves a REQUEUED or FIXED ticket) and never commit.\n"
+        "End with one line: RECOVERY: REQUEUED, RECOVERY: FIXED, RECOVERY: SPLIT or RECOVERY: NEEDS HUMAN, "
+        "followed by one sentence."
     )
 
 
@@ -444,7 +487,8 @@ def read_recovery(log):
 
 
 def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log):
-    """Let the planner fix a blocked ticket. Returns True when the ticket was requeued for another attempt."""
+    """Let the planner fix a blocked ticket. Returns "requeued" (another attempt), "fixed" (the planner finished
+    it and Donut moved it to done) or None."""
     name = planner.get("model") or planner["engine"]
     print(f"\n[recover] {ticket.name} — {name}, fresh context", flush=True)
     text = ticket.read_text(encoding="utf-8")
@@ -462,14 +506,18 @@ def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log
     if verdict == "requeued" and ticket.exists():
         ticket.rename(ticket.parent.parent / "to_do" / ticket.name)
         print(paint(f"Recovery: ticket revised and requeued. {summary}".rstrip(), "teal"), flush=True)
-        return True
+        return "requeued"
+    if verdict == "fixed" and ticket.exists():
+        ticket.rename(ticket.parent.parent / "done" / ticket.name)
+        print(paint(f"Recovery: the planner finished it. {summary}".rstrip(), "teal"), flush=True)
+        return "fixed"
     if verdict == "split":
         print(paint(f"Recovery: split into smaller tickets. {summary}".rstrip(), "teal"), flush=True)
     elif verdict == "needs human":
         print(paint(f"Recovery: needs a human decision. {summary}".rstrip(), "coral"), flush=True)
     else:
         print(paint("Recovery: no usable answer from the planner; the ticket stays blocked.", "orange"), flush=True)
-    return False
+    return None
 
 
 def repair_queue(planner, worker, project, broken, run_dir, lanes=None):
@@ -573,7 +621,7 @@ def run_batch(
     attempted = set()
     records = []
     failure = False
-    recovered, repaired, stopped = set(), False, False
+    recovered, repaired, stopped = {}, False, False
     step = 0  # Numbers log files; a requeued ticket's retry gets a new number, so no log is overwritten.
 
     def room():
@@ -612,6 +660,7 @@ def run_batch(
                     files = set(checkpoints.changed_files(project) or []) - set(before or [])
                     files = sorted(files | set(checkpoints.committed_files(project, heads)))
                     files = [f for f in files if not f.startswith(relative(project, lanes))]
+                    files, others = ticket_files(project, Ticket(final, "done").scope, files)
                     print(
                         f"\n[review {round_number}/{review_rounds}] {path.name} — "
                         f"{reviewer.get('model') or reviewer['engine']}, fresh context",
@@ -623,7 +672,7 @@ def run_batch(
                     review_code = run_agent(
                         reviewer,
                         project,
-                        review_prompt(project, final, files, checkpoints.diff(project, files, before=heads)),
+                        review_prompt(project, final, files, checkpoints.diff(project, files, before=heads), others),
                         review_log,
                         review=True,
                     )
@@ -664,11 +713,22 @@ def run_batch(
                     else "Ticket missing or duplicated across lanes."
                 )
                 status = "Done" if code == 0 and final == locations[0] else "Blocked"
+                gaps = Ticket(final, "done").unticked if status == "Done" else []
+                if gaps:
+                    # Finished, but not every acceptance check was met: say so instead of calling it done.
+                    status = "Partial"
+                    record["unticked"] = gaps
+                    count_text = f"{len(gaps)} acceptance check{'' if len(gaps) == 1 else 's'} not ticked"
+                    print(paint(f"Partial: {count_text}: {'; '.join(gaps)[:300]}", "orange"), flush=True)
                 record.update(status=status, completion_notes=notes)
                 after = checkpoints.changed_files(project)
                 if after is not None:
                     committed = set(checkpoints.committed_files(project, heads))
-                    record["changed_files"] = sorted((set(after) - set(before or [])) | committed)
+                    changed = sorted((set(after) - set(before or [])) | committed)
+                    scope = Ticket(final, "done").scope if final else []
+                    record["changed_files"], other = ticket_files(project, scope, changed)
+                    if other:
+                        record["other_files"] = other  # Changed meanwhile, not listed by the ticket: left out of PRs.
                 if pull_requests(notes):
                     record["pull_requests"] = pull_requests(notes)  # Opened by the worker, as its ticket allowed.
                 if checkpoint:
@@ -682,10 +742,21 @@ def run_batch(
                         print("Stopping: Agent failed or did not leave a valid completed/blocked ticket.", flush=True)
                         stopped = True
                         break
-                    if planner and final == locations[4] and path.name not in recovered:
-                        recovered.add(path.name)  # One recovery per ticket per run, so it cannot loop.
-                        if recover_ticket(planner, profile, project, final, number, run_dir, log):
+                    if planner and final == locations[4] and recovered.get(path.name, 0) < RECOVERIES:
+                        recovered[path.name] = recovered.get(path.name, 0) + 1  # Bounded, so it cannot loop.
+                        outcome = recover_ticket(planner, profile, project, final, number, run_dir, log)
+                        if outcome == "requeued":
                             attempted.discard(path.name)
+                        elif outcome == "fixed":
+                            finished = Ticket(locations[0], "done")
+                            fixed = dict(task=path.name, recovered="planner", exit_code=0)
+                            fixed["status"] = "Partial" if finished.unticked else "Done"
+                            if finished.unticked:
+                                fixed["unticked"] = finished.unticked
+                            text = locations[0].read_text(encoding="utf-8")
+                            fixed["completion_notes"] = text.split("## Completion notes", 1)[-1][-6000:]
+                            records.append(fixed)
+                            (run_dir / "results.json").write_text(json.dumps(records, indent=2))
             if stopped or not planner or repaired or not room():
                 break
             broken = [
@@ -706,6 +777,15 @@ def run_batch(
         (run_dir / "results.json").write_text(json.dumps(records, indent=2))
         for line in queue_report(project, attempted, lanes):
             print(paint("Queue: " + line, "orange"), flush=True)
+        # Every decision the run is waiting on, in one place, instead of scattered through the tickets' notes.
+        asks = [
+            (t.name, t.needs_human[-1]) for t in load_tickets(project, lanes) if t.lane == "blocked" and t.needs_human
+        ]
+        if asks:
+            print(paint("\nNeeds your decision:", "coral"), flush=True)
+            for name, ask in asks:
+                print(paint(f"  {name[:3]}  {ask[:300]}", "coral"), flush=True)
+            print("  Answer in /plan: the planner records it and requeues the ticket.", flush=True)
         if pull_request and records:
             # Before the summary, so its table can link every pull request: the workers' own and Donut's.
             urls = open_pull_request(planner, reviewer, project, records, run_dir, lanes)
@@ -721,7 +801,8 @@ def run_batch(
                 "Print ONLY a compact Markdown table: Task | Result | Note | PR. "
                 "Exactly one row per supplied record; no introduction or conclusion. "
                 "Task: number plus a short title (at most 5 words). "
-                "Result: recorded status. Note: at most 10 words, prioritizing failed tests, "
+                "Result: recorded status. For a Partial record the Note names its unticked checks. "
+                "Note: at most 10 words, prioritizing failed tests, "
                 "blockers or human checks; otherwise briefly say what changed. "
                 "PR: every URL in the record's pull_requests, copied exactly and in full, separated by spaces; "
                 "a dash when it has none. "

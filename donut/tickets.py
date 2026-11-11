@@ -30,6 +30,61 @@ def add_pull_requests(path, urls):
         pass  # The pull request exists either way; only its line in the ticket is missing.
 
 
+_NOISE = re.compile(r"(^|/)__pycache__/|\.py[co]$|(^|/)\.DS_Store$")
+
+
+def section(text, title):
+    """The body of a `## Title` section, up to the next `## ` heading; "" when the ticket has none."""
+    match = re.search(rf"^##\s+{re.escape(title)}\b[^\n]*\n(.*?)(?=^##\s|\Z)", text or "", re.M | re.S | re.I)
+    return match[1] if match else ""
+
+
+def scope_of(text):
+    """The paths a ticket may change: the backtick-quoted paths of its Files section, without Do not touch lines."""
+    paths = []
+    for line in section(text, "Files").splitlines():
+        if re.match(r"\s*(?:[-*]\s*)?\**do not touch", line, re.I):
+            continue
+        paths += [token.strip() for token in re.findall(r"`([^`\s]+)`", line) if "/" in token or "." in token]
+    return paths
+
+
+def unticked(text):
+    """Acceptance boxes the worker left unticked, apart from Human check items, which stay the user's."""
+    lines = section(text, "Acceptance criteria").splitlines()
+    return [
+        re.sub(r"^\s*[-*]\s*\[ \]\s*", "", line).strip()
+        for line in lines
+        if re.match(r"\s*[-*]\s*\[ \]", line) and "human check" not in line.lower()
+    ]
+
+
+def split_scope(project, scope, files):
+    """(files the ticket lists, other files) from project-relative paths.
+
+    A project folder can hold many repositories and other sessions, so a file that changed while a worker ran is
+    not always that worker's. Generated noise (bytecode, .DS_Store) is dropped. With no listed scope, every file
+    counts as the ticket's.
+    """
+    files = [path for path in files if not _NOISE.search(path)]
+    if not scope:
+        return files, []
+    project = str(Path(project).resolve()).rstrip("/") + "/"
+    wanted = [path[len(project) :] if path.startswith(project) else path.lstrip("./") for path in scope]
+
+    def listed(path):
+        for want in wanted:
+            if want.endswith("/"):
+                if ("/" + path).find("/" + want) != -1:
+                    return True
+            elif path == want or path.endswith("/" + want) or want.endswith("/" + path):
+                return True
+        return False
+
+    mine = [path for path in files if listed(path)]
+    return mine, [path for path in files if path not in mine]
+
+
 def tasks(project, lane, lanes=None):
     """A lane's tickets; lanes is the session's lanes folder (default: the project's swim_lanes/)."""
     return sorted((Path(lanes or Path(project) / "swim_lanes") / lane).glob("[0-9]*_*.md"))
@@ -69,6 +124,9 @@ class Ticket:
             text = ""
             self.warnings.append(f"unreadable ({error.strerror or error})")
         self.pull_requests = pull_requests(text)
+        self.scope = scope_of(text)
+        self.unticked = unticked(text)
+        self.needs_human = [" ".join(line.split()) for line in re.findall(r"NEEDS HUMAN:\s*(.+)", text)]
         # The heading, and the short description under it, for the /next and /prev tables.
         lines = [line.strip() for line in text.splitlines()]
         heading = next((line for line in lines if line.startswith("# ")), "")

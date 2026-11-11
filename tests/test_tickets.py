@@ -75,6 +75,48 @@ class TicketParsingTests(unittest.TestCase):
         self.assertIn("+print(2)", checkpoints.diff(self.project, ["app.py"], before=before))
         self.assertEqual(checkpoints.diff(self.project, ["app.py"]), "")  # Against HEAD alone it would be empty.
 
+    def test_a_ticket_with_unticked_checks_is_not_plain_done_and_others_files_are_not_its_own(self):
+        text = (
+            "# T\n\n**Slug:** `t1`\n**Depends on:** None\n\n## Files\n\n"
+            "- Modify: `api/app.py`, `api/tests/test_app.py` (in the worktree).\n"
+            "- Do not touch: `api/legacy.py`\n\n## Acceptance criteria\n\n"
+            "- [x] Unit tests pass.\n- [ ] Live check passes.\n- [ ] **Human check**: looks right.\n\n"
+            "## Completion notes\n- NEEDS HUMAN: allow a second login today?\n"
+        )
+        ticket = Ticket(self.ticket("001_t1.md", text, "blocked"), "blocked")
+        self.assertEqual(ticket.scope, ["api/app.py", "api/tests/test_app.py"])
+        self.assertEqual(ticket.unticked, ["Live check passes."])  # The Human check stays the user's.
+        self.assertEqual(ticket.needs_human, ["allow a second login today?"])
+        for repo in ("api", "other"):
+            (self.project / repo).mkdir()
+            checkpoints._git(self.project / repo, "init", "-q")
+        changed = ["api/app.py", "api/helper.py", "api/__pycache__/app.cpython-313.pyc", "other/notes.py"]
+        mine, others = runner.ticket_files(self.project, ticket.scope, changed)
+        self.assertEqual(mine, ["api/app.py", "api/helper.py"])  # Same repository: the worker's, though unlisted.
+        self.assertEqual(others, ["other/notes.py"])  # Another repository: someone else's. Bytecode is dropped.
+        self.assertEqual(runner.ticket_files(self.project, ["nothing/matches.py"], changed)[1], [])
+        self.assertEqual(
+            runner.ticket_files(self.project, [], changed)[0], ["api/app.py", "api/helper.py", "other/notes.py"]
+        )
+        prompt = runner.review_prompt(self.project, ticket.path, mine, "", others)
+        self.assertIn("outside the ticket's listed files:\n  other/notes.py", prompt)
+        self.assertIn("not part of this submission", prompt)
+
+    def test_the_planner_can_finish_a_small_remainder_itself(self):
+        log = self.project / "recover.log"
+        log.write_text(
+            "I reran the test from the root.\nRECOVERY: FIXED: reran the tests from the repo root, 12 pass.\n"
+        )
+        self.assertEqual(runner.read_recovery(log), ("fixed", "reran the tests from the repo root, 12 pass"))
+        path = self.ticket("001_t1.md", "# T\n\n**Slug:** `t1`\n**Depends on:** None\n", "blocked")
+        with patch("donut.runner.worker_skill", return_value=self.project / "skills"):
+            prompt = runner.recovery_prompt(self.project, path, "why", "output", [])
+            worker = runner.worker_prompt(self.project, path)
+        self.assertIn("RECOVERY: FIXED", prompt)
+        self.assertIn("consents.md", prompt)
+        self.assertIn("consents.md", worker)
+        self.assertIn("Never open a pull request while a ticket is in swim_lanes/blocked/", worker)
+
     def test_dependency_forms(self):
         self.assertEqual(parse_dependencies(None), [])
         self.assertEqual(parse_dependencies("None"), [])
