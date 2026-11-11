@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
@@ -163,6 +164,22 @@ class DraftTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("_.------", lines[0])
                 self.assertTrue(any("do the thing." in line for line in lines[:3]))
                 self.assertTrue(any("DONUT" in line for line in lines))
+
+    async def test_the_input_box_shows_what_the_turns_cost(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = self.app(temp)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                draft = app.query_one(Draft)
+                self.assertEqual(draft.border_subtitle, "$0.00 spent")
+                first, second = SimpleNamespace(usage={"reported_cost_usd": 0.25}), SimpleNamespace(usage={})
+                app.add_spent(first)
+                app.add_spent(second)  # No cost reported (Codex, Ollama): nothing is added.
+                first.usage = {"reported_cost_usd": 0.75}  # A running total: only the difference counts.
+                app.add_spent(first)
+                first.usage = {"reported_cost_usd": 0.10}  # A new provider process starts over.
+                app.add_spent(first)
+                self.assertEqual(draft.border_subtitle, "$0.85 spent")
 
 
 class SlashMenuTests(unittest.IsolatedAsyncioTestCase):

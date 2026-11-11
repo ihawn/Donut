@@ -614,7 +614,7 @@ class Donut(App):
     #usage {{height: auto; max-height: 2; padding: 0 2;}}
     #band {{height: auto; padding: 0 2;}}
     #draft {{height: auto; min-height: 3; max-height: 10; margin: 0 1; border: round {CORAL} 60%;
-             background: #101820;}}
+             background: #101820; border-subtitle-align: right; border-subtitle-color: {GRAY};}}
     #draft:focus {{border: round {ORANGE};}}
     #draft.-shell {{border: round {TEAL};}}
     #status {{height: auto; max-height: 3; padding: 0 2;}}
@@ -711,6 +711,7 @@ class Donut(App):
         self.quotas = {}  # usage_key -> [{"window", "percent", "resets_at"}]; [] means no plan limits apply
         self.session_profiles = {}
         self.ponytail_installed = {}  # usage_key -> whether Ponytail is installed for that login
+        self.spent = 0.0  # Dollars the providers reported for this window's turns, shown on the input box.
 
     def compose(self):
         yield Transcript(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
@@ -737,6 +738,7 @@ class Donut(App):
         except OSError:
             pass
         self.welcome()
+        self.add_spent(None)
         self.status("Ready")
         if not self.config.get("aliases"):
             self.say(Text("No accounts configured. Exit and run donut setup.", style=CORAL))
@@ -1393,6 +1395,19 @@ class Donut(App):
             self.ponytail_installed[key] = plugins.installed(profile, "ponytail", self.project)
         return self.ponytail_installed[key]
 
+    def add_spent(self, session):
+        """Add what a session's last turn cost to the amount on the input box. Only Claude reports a cost."""
+        reported = (getattr(session, "usage", None) or {}).get("reported_cost_usd")
+        if isinstance(reported, (int, float)):
+            # Claude reports the session's running cost; a lower figure means a new provider process started over.
+            previous = getattr(session, "spent_reported", 0.0)
+            self.spent += reported - previous if reported >= previous else reported
+            session.spent_reported = reported
+        try:
+            self.query_one(Draft).border_subtitle = f"${self.spent:.2f} spent"
+        except NoMatches:
+            pass
+
     async def ask(self, text, prompt=None):
         """Send one turn to the active session, then book it on the conversation's Ponytail task row."""
         session = self.active
@@ -1408,6 +1423,7 @@ class Donut(App):
             prompt += background.WAIT_NOTE
             session.told_wait = True
         await session.query(prompt)
+        self.add_spent(session)
         self.remember_exchange(session, text)
         if waits or getattr(session, "donut_waits", False):
             command = background.wait_request(self.turn_text)
@@ -2679,6 +2695,7 @@ class Donut(App):
         self.active = session  # So Ctrl+C can interrupt it.
         try:
             await asyncio.wait_for(session.query(prompt), limit)
+            self.add_spent(session)
         finally:
             self.active = None
             await session.close()
