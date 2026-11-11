@@ -69,6 +69,13 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
                 app.execute("/help")
                 await pilot.pause()
                 self.assertFalse(app.busy)
+                said, say = [], app.say
+                app.say = lambda *args, **kwargs: (said.append(str(args[0])), say(*args, **kwargs))[1]
+                app.execute("/help this isn't a quotation")  # An apostrophe must not stop the command.
+                await pilot.pause()
+                app.say = say
+                self.assertTrue(said)
+                self.assertFalse([line for line in said if "No closing quotation" in line])
                 app.execute("/work")
                 await pilot.pause()
                 menu = app.query_one(Menu)

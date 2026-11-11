@@ -1697,7 +1697,10 @@ class Donut(App):
             self.turn_finished()
 
     async def command(self, text):
-        words = shlex.split(text)
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()  # An apostrophe in plain words ("/review don't skip tests") is not a quotation.
         name, args = words[0], words[1:]
         if self.simple and name in COMPLEX_COMMANDS:
             self.say(f"  {name} is part of complex mode. /complex shows it.", DIM)
