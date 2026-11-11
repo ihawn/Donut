@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from donut import checkpoints, providers
+from donut import runner, tickets
 from donut.tickets import Ticket, parse_dependencies, pick, queue_report
 
 
@@ -20,6 +21,59 @@ class TicketParsingTests(unittest.TestCase):
         path = self.project / "swim_lanes" / lane / name
         path.write_text(text, encoding="utf-8")
         return path
+
+    def test_next_and_prev_list_tickets_with_overview_and_pull_requests(self):
+        lanes = self.project / "swim_lanes"
+        body = "# {title}\n\n{about}\n\n**Slug:** `{slug}`\n**Depends on:** None\n\n## Goal\nx\n\n## Completion notes\n"
+        for number, lane in ((1, "done"), (2, "blocked"), (3, "done"), (4, "in_progress"), (5, "to_do"), (6, "to_do")):
+            text = body.format(title=f"Ticket {number}", about=f"Does thing {number} | safely.", slug=f"t{number}")
+            self.ticket(f"00{number}_t{number}.md", text, lane)
+        done = lanes / "done" / "003_t3.md"
+        done.write_text(done.read_text() + "- PR: https://github.com/o/r/pull/7\n")  # Written by the worker.
+        tickets.add_pull_requests(done, ["https://github.com/o/r/pull/7", "https://github.com/o/r/pull/8"])
+        self.assertEqual(
+            Ticket(done, "done").pull_requests, ["https://github.com/o/r/pull/7", "https://github.com/o/r/pull/8"]
+        )
+        self.assertEqual([t.name[:3] for t in tickets.upcoming(self.project)], ["004", "005", "006"])
+        self.assertEqual([t.name[:3] for t in tickets.upcoming(self.project, count=2)], ["004", "005"])
+        self.assertEqual([t.name[:3] for t in tickets.finished(self.project)], ["003", "002", "001"])
+        self.assertEqual([t.name[:3] for t in tickets.finished(self.project, count=1)], ["003"])
+        table = tickets.table(tickets.finished(self.project, count=2)).splitlines()
+        self.assertEqual(table[0], "| # | Ticket | Status | Overview | PR |")
+        self.assertEqual(
+            table[2],
+            "| 003 | Ticket 3 | done | Does thing 3 / safely. "
+            "| https://github.com/o/r/pull/7 https://github.com/o/r/pull/8 |",
+        )
+        self.assertEqual(table[3], "| 002 | Ticket 2 | blocked | Does thing 2 / safely. | - |")
+
+    def test_a_worker_may_use_git_when_its_ticket_asks_but_never_on_main(self):
+        path = self.ticket("001_t1.md", "# T\n\n**Slug:** `t1`\n**Depends on:** None\n")
+        with patch("donut.runner.worker_skill", return_value=self.project / "skills"):
+            prompt = runner.worker_prompt(self.project, path)
+        self.assertNotIn("Do not work another ticket, delegate, commit, push", prompt)
+        self.assertIn("only when the ticket asks for it, you may create a branch, commit", prompt)
+        self.assertIn("Never commit on or push to the default branch (main or master)", prompt)
+        self.assertIn("`PR: <url>`", prompt)
+
+    def test_the_review_sees_work_the_worker_committed(self):
+        def git(*args):
+            return checkpoints._git(self.project, *args)
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (self.project / "app.py").write_text("print(1)\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", "start")
+        before = checkpoints.heads(self.project)
+        git("switch", "-q", "-c", "feature/two")
+        (self.project / "app.py").write_text("print(2)\n")
+        git("commit", "-q", "-am", "two")  # Nothing is left uncommitted.
+        self.assertEqual(checkpoints.changed_files(self.project), [])
+        self.assertEqual(checkpoints.committed_files(self.project, before), ["app.py"])
+        self.assertIn("+print(2)", checkpoints.diff(self.project, ["app.py"], before=before))
+        self.assertEqual(checkpoints.diff(self.project, ["app.py"]), "")  # Against HEAD alone it would be empty.
 
     def test_dependency_forms(self):
         self.assertEqual(parse_dependencies(None), [])

@@ -1501,6 +1501,38 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.show_title()
             self.assertNotIn("\x1b]0;x", written[-1][4:])  # Control characters never reach the terminal.
 
+    async def test_next_and_prev_list_this_sessions_tickets(self):
+        from donut import workspace
+
+        app = self.make_app()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            lanes = workspace.create(app.project, app.session_name)
+            ticket = "# {title}\n\nAbout {title}.\n\n**Slug:** `{slug}`\n**Depends on:** None\n"
+            (lanes / "done" / "001_a.md").write_text(ticket.format(title="Old one", slug="a"))
+            (lanes / "done" / "002_b.md").write_text(
+                ticket.format(title="Latest one", slug="b") + "PR: https://github.com/o/r/pull/7\n"
+            )
+            (lanes / "to_do" / "003_c.md").write_text(ticket.format(title="Coming up", slug="c"))
+
+            async def shown(command):
+                app.query_one(RichLog).clear()
+                app.execute(command)
+                await pilot.pause(0.3)
+                return "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+
+            body = await shown("/prev 1")
+            self.assertIn("Latest one", body)
+            self.assertIn("https://github.com/o/r/pull/7", body)
+            self.assertNotIn("Old one", body)
+            self.assertNotIn("Coming up", body)
+            body = await shown("/prev")
+            self.assertLess(body.index("Latest one"), body.index("Old one"))  # Latest first.
+            body = await shown("/next")
+            self.assertIn("Coming up", body)
+            self.assertNotIn("Latest one", body)
+            self.assertIn("COUNT is a positive number", await shown("/next zero"))
+
     async def test_running_background_shells_show_in_the_status_line(self):
         app = self.make_app()
         async with app.run_test(size=(140, 40)) as pilot:

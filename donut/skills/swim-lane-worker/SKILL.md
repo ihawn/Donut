@@ -33,7 +33,7 @@ When review is on, a reviewer model checks each ticket you move to done, in a fr
 5. Tick only objectively verified acceptance boxes; leave Human check boxes unticked. Record Changed, Tests (actual commands/output), Deviations, and Open issues / human checks under Completion notes.
 6. Verify the changed files against the allowed scope, accounting for pre-existing changes. Move the completed ticket to done.
 
-Never create, delete, renumber, or rewrite tickets. Only move them, tick acceptance boxes, and fill Completion notes. Do not commit, push, create branches, or install packages unless explicitly authorized by the task/user. Report extra work as open issues, not new tasks.
+Never create, delete, renumber, or rewrite tickets. Only move them, tick acceptance boxes, and fill Completion notes. Do not install packages unless explicitly authorized by the task/user. Git work is allowed only when the ticket asks for it: you may then create a branch, commit the ticket's files, push that branch and open a pull request with `gh`, and you record each pull request in Completion notes as `PR: <url>`. Never commit on or push to the default branch (`main` or `master`), never force-push, and never merge a pull request. When the ticket does not ask for git work, leave the changes in the working tree; Donut opens the pull request after review. Report extra work as open issues, not new tasks.
 
 ## Unity projects
 

@@ -30,7 +30,7 @@ from .summaries import claude_context, codex_context, is_connected, mcp_servers,
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
-from . import background, effort, plugins, ponytail, routing, workspace
+from . import background, effort, plugins, ponytail, routing, tickets, workspace
 from .platform import copy_native, open_window, window_command
 from .platform import process_options
 from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
@@ -240,7 +240,19 @@ class Transcript(RichLog, can_focus=False):
 
 
 # Commands that only show something (or change only what is shown), so they run at once even mid-turn.
-INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity", "/routing", "/focus"}
+INSTANT_COMMANDS = {
+    "/usage",
+    "/help",
+    "/copy",
+    "/context",
+    "/mcp",
+    "/plugin",
+    "/verbosity",
+    "/routing",
+    "/focus",
+    "/next",
+    "/prev",
+}
 # The two versions of the interface, asked about the first time Donut opens: (label, what it says beside it).
 INTERFACES = {
     "simple": ("Simple mode", "I just want to use this like I would use Claude Code or Codex"),
@@ -257,6 +269,8 @@ COMPLEX_COMMANDS = {
     "/reviewer",
     "/soloist",
     "/session",
+    "/next",
+    "/prev",
 }
 SIMPLE_PLACEHOLDER = "Ask anything or say what to change, or type / for commands"
 # Commands that talk to the current model's provider, so they need a model to have been picked.
@@ -299,6 +313,8 @@ COMMANDS = [
     ("/complex", "Complex mode: show every feature, with the planner, worker, reviewer and tickets"),
     ("/resume", "Resume an earlier conversation in its mode, model and tickets session"),
     ("/session", "Switch this window's tickets folder, .donut/<session>/, or start a new one"),
+    ("/next", "List the tickets still to do, with overview and pull requests (/next 3 for the next three)"),
+    ("/prev", "List the tickets already worked, latest first (/prev 3 for the last three)"),
     ("/rename", "Name this session; its tickets folder becomes .donut/<name>/"),
     ("/project", "Open another project in a new window"),
     ("/permissions", "Choose what the agent may do without asking (Shift+Tab cycles)"),
@@ -1841,6 +1857,17 @@ class Donut(App):
                 self.set_mode("plan")
         elif name == "/session":
             await self.choose_session(args[0] if args else None)
+        elif name in ("/next", "/prev"):
+            if args and not (args[0].isdecimal() and int(args[0]) > 0):
+                self.say(f"  Use {name} or {name} COUNT, where COUNT is a positive number.", DIM)
+                return
+            count = int(args[0]) if args else None
+            listing = tickets.upcoming if name == "/next" else tickets.finished
+            found = await asyncio.to_thread(listing, self.project, self.lanes, count)
+            if found:
+                self.say(markdown(tickets.table(found)))
+            else:
+                self.say("  No tickets waiting." if name == "/next" else "  No tickets worked yet.", DIM)
         elif name == "/project":
             # The path exactly as typed: shell-style splitting would eat a Windows path's backslashes.
             path = text.strip()[len(name) :].strip().strip("\"'")
@@ -1919,7 +1946,7 @@ class Donut(App):
             )
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)

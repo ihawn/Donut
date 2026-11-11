@@ -100,7 +100,7 @@ The interactive terminal wraps all of this with an inline slash-command menu (ty
 
 Not everyone wants planners and tickets. The first time Donut opens it asks whether you want simple or complex mode. Simple mode is one conversation, like Claude Code or Codex, where Donut rates each new request from 1 to 10 and picks the cheapest model that can handle it. `/harder` moves up a model, and `/complex` shows everything. See [Simple mode, complex mode and auto](docs/reference.md#simple-mode-complex-mode-and-auto).
 
-Two sets of accounts on one machine, such as work on Bedrock and a personal subscription? `donut --profile NAME` keeps each one's accounts, conversations and tickets apart, and a project can list the profiles allowed to open it. See [Profiles](docs/reference.md#profiles).
+Two sets of accounts on one machine, such as a company account and a personal subscription? `donut --profile NAME` keeps each one's accounts, conversations and tickets apart, and a project can list the profiles allowed to open it. See [Profiles](docs/reference.md#profiles).
 
 > Subjective acceptance checks stay yours to verify, and a failed or blocked ticket is reported, never papered over. Only run unattended workers in projects you trust and have under version control.
 

@@ -10,6 +10,24 @@ HELD_LANES = ("on_hold", "blocked")
 _FIELD = r"^\s*(?:[-*]\s*)?\*\*{name}:\*\*\s*(.*)$"
 _NONE = re.compile(r"(?:none|n/a|-)?\.?\s*(?:\(.*\))?", re.I)
 _SLUG_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+_PULL_REQUEST = re.compile(r"^\s*(?:[-*]\s*)?PR:\s*<?(https?://[^\s>)]+)", re.M)
+
+
+def pull_requests(text):
+    """The pull requests a ticket records: its `PR: <url>` lines, in order, each once."""
+    return list(dict.fromkeys(_PULL_REQUEST.findall(text or "")))
+
+
+def add_pull_requests(path, urls):
+    """Record pull requests Donut opened in the ticket, as `PR: <url>` lines, so /prev can list them."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+        new = [url for url in urls if url not in pull_requests(text)]
+        if new:
+            path.write_text(text.rstrip("\n") + "\n" + "".join(f"PR: {url}\n" for url in new), encoding="utf-8")
+    except OSError:
+        pass  # The pull request exists either way; only its line in the ticket is missing.
 
 
 def tasks(project, lane, lanes=None):
@@ -50,6 +68,13 @@ class Ticket:
         except OSError as error:
             text = ""
             self.warnings.append(f"unreadable ({error.strerror or error})")
+        self.pull_requests = pull_requests(text)
+        # The heading, and the short description under it, for the /next and /prev tables.
+        lines = [line.strip() for line in text.splitlines()]
+        heading = next((line for line in lines if line.startswith("# ")), "")
+        self.title = heading[2:].strip()
+        after = lines[lines.index(heading) + 1 :] if heading else []
+        self.summary = next((line for line in after if line and not line.startswith(("#", "**", "- **", "* **"))), "")
         slug = field(text, "Slug")
         self.slug = slug.strip("` ") if slug else ""
         if not self.slug:
@@ -67,6 +92,38 @@ class Ticket:
     @property
     def name(self):
         return self.path.name
+
+
+def table(tickets):
+    """A Markdown table of tickets: number, title, lane, overview and pull requests."""
+
+    def cell(text, width):
+        text = " ".join((text or "").replace("|", "/").split())
+        return text if len(text) <= width else text[: width - 1] + "…"
+
+    rows = ["| # | Ticket | Status | Overview | PR |", "|---|---|---|---|---|"]
+    for ticket in tickets:
+        number = re.match(r"\d+", ticket.name)
+        rows.append(
+            f"| {number[0] if number else ''} | {cell(ticket.title or ticket.slug, 60)} "
+            f"| {ticket.lane.replace('_', ' ')} | {cell(ticket.summary, 160) or '-'} "
+            f"| {' '.join(ticket.pull_requests) or '-'} |"
+        )
+    return "\n".join(rows)
+
+
+def upcoming(project, lanes=None, count=None):
+    """Tickets still to do, in the order they run: in progress first, then to do. count keeps the first few."""
+    found = [ticket for ticket in load(project, lanes) if ticket.lane in RUNNABLE_LANES]
+    found.sort(key=lambda ticket: RUNNABLE_LANES.index(ticket.lane))
+    return found[:count] if count else found
+
+
+def finished(project, lanes=None, count=None):
+    """Tickets already worked (done or blocked), the latest number first. count keeps the latest few."""
+    found = [ticket for ticket in load(project, lanes) if ticket.lane in ("done", "blocked")]
+    found.sort(key=lambda ticket: ticket.name, reverse=True)
+    return found[:count] if count else found
 
 
 def load(project, lanes=None):
