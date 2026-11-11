@@ -78,6 +78,42 @@ def painted_logo():
     return "\n".join("".join(paint(text, color) if color else text for text, color in runs) for runs in logo_segments())
 
 
+def logo_svg():
+    """The logo as an SVG image in the terminal's colors, for the README, where a code block has no color.
+
+    Every run of characters is placed and stretched to its column, so the art lines up in whatever monospace
+    font the viewer's system has. python -m donut.ui writes it to docs/images/mascot.svg.
+    """
+    from xml.sax.saxutils import escape
+
+    cell, line, pad = 9, 19, 18
+    rows = logo_segments()
+    width = max(len(row) for row in LOGO.splitlines()) * cell + 2 * pad
+    height = len(rows) * line + 2 * pad
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+        'role="img" aria-label="A roughly drawn donut tells a little donut: do the thing. The little donut says ok.">',
+        f'<rect width="{width}" height="{height}" rx="10" fill="#101820"/>',
+        '<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" xml:space="preserve">',
+    ]
+    for row, runs in enumerate(rows):
+        column = 0
+        for text, color in runs:
+            # Leading spaces only move the start: a stretched run must begin and end on a drawn character.
+            start = column + len(text) - len(text.lstrip(" "))
+            shown = text.strip(" ")
+            column += len(text)
+            if not color or not shown:
+                continue
+            x, y = pad + start * cell, pad + row * line + 14
+            fill = "#%02x%02x%02x" % COLORS[color]
+            out.append(
+                f'<text x="{x}" y="{y}" textLength="{len(shown) * cell}" lengthAdjust="spacingAndGlyphs" '
+                f'fill="{fill}">{escape(shown)}</text>'
+            )
+    return "\n".join(out + ["</g>", "</svg>"]) + "\n"
+
+
 def paint(text, color="teal"):
     if not sys.stdout.isatty() or "NO_COLOR" in os.environ:
         return text
@@ -178,3 +214,9 @@ class CodeStream:
             styled = self.highlighter.line(body)
             output.append((self.renderer.render(styled) if colored else body) + newline)
         return "".join(output)
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+
+    Path(__file__).parent.parent.joinpath("docs/images/mascot.svg").write_text(logo_svg(), encoding="utf-8")
