@@ -518,6 +518,27 @@ class Menu(Vertical):
         self.post_message(self.Chosen(self.current(), "enter"))
 
 
+def shell_candidates(line, project):
+    """Names that could finish the last word of a !command: programs for the first word, else paths."""
+    head, _, word = line.lstrip("!").lstrip().rpartition(" ")
+    if not head.strip() and "/" not in word:
+        names = {f for d in os.environ.get("PATH", "").split(os.pathsep) if os.path.isdir(d)
+                 for f in os.listdir(d) if os.access(os.path.join(d, f), os.X_OK)}
+        return word, sorted(n for n in names if n.startswith(word))
+    folder, _, prefix = word.rpartition("/")
+    dir_part = folder + "/" if (folder or word.startswith("/")) else ""
+    try:
+        entries = os.listdir(Path(project) / os.path.expanduser(dir_part or "."))
+    except OSError:
+        return word, []
+    out = []
+    for name in sorted(entries):
+        if name.startswith(prefix) and (prefix.startswith(".") or not name.startswith(".")):
+            full = dir_part + name
+            out.append(full + ("/" if (Path(project) / os.path.expanduser(full)).is_dir() else ""))
+    return word, out
+
+
 class Draft(TextArea):
     """The prompt editor. Enter sends; Shift+Enter, Alt+Enter or Ctrl+J insert a newline.
 
@@ -548,6 +569,11 @@ class Draft(TextArea):
             event.prevent_default()
             menu.render_rows(int(event.key) - 1)
             self.post_message(Menu.Chosen(menu.current(), "enter"))
+            return
+        if event.key == "tab" and self.text.startswith("!") and self.selection.is_empty:
+            event.stop()
+            event.prevent_default()
+            self.app.complete_shell(self)
             return
         if event.key in self.SEND_KEYS:
             event.stop()
@@ -1006,12 +1032,13 @@ class Donut(App):
             if self.picking and not self.picking.done():
                 self.picking.set_result(event.row[1] if event.row else None)
             return
+        kind = menu.kind
         menu.close()
         if event.row is None:
             return
         command = event.row[1]
-        if event.key == "tab":
-            draft.load_text(command + " ")
+        if kind == "shell" or event.key == "tab":
+            draft.load_text(command if kind == "shell" else command + " ")
             draft.move_cursor(draft.document.end)
             return
         draft.clear()
@@ -2031,6 +2058,21 @@ class Donut(App):
         self.log_turn(
             wake.role if wake.role in ("solo", "review") else "plan", wake.role, f"(background) {wake.command}"
         )
+
+    def complete_shell(self, editor):
+        """Tab in !mode: finish the last word, or extend it to the common prefix and list what is left."""
+        word, found = shell_candidates(editor.text, self.project)
+        if not found:
+            return
+        prefix = os.path.commonprefix(found)
+        if len(prefix) > len(word):
+            editor.insert(prefix[len(word):])
+        elif len(found) > 1:
+            stem = editor.text[: len(editor.text) - len(word)]
+            rows = [(name, stem + name + ("" if name.endswith("/") else " ")) for name in found[:200]]
+            self.query_one(Menu).open("shell", "Completions", rows)
+        if len(found) == 1 and not prefix.endswith("/"):
+            editor.insert(" ")
 
     async def shell(self, command):
         """!command: run it in the project and show its output; the model gets it with the next message."""
