@@ -1259,6 +1259,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.turn_text, app.shown = "", 0
+            app.verbosity = "verbose"  # The level that keeps every message as it is written.
             for piece in ("Status: found the job.", "\n\nConfirmed: it is slow.", "\n\n```sql\nSELECT 1\n\nFROM t\n"):
                 app.event("text", piece)
             await pilot.pause()
@@ -1443,7 +1444,9 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.turn_text, "Status: reading the repo.\n\nTwo files changed.")  # Unchanged.
         self.assertNotIn("Status: reading", seen["quiet"])
         self.assertIn("Two files changed.", seen["quiet"])
-        self.assertIn("Status: reading", seen["normal"])
+        self.assertNotIn("Status: reading", seen["normal"])  # A progress note: shown while it works, not kept.
+        self.assertIn("Two files changed.", seen["normal"])
+        self.assertIn("Status: reading", seen["verbose"])
         self.assertNotIn("⏺ Bash", seen["normal"])
         self.assertNotIn("Check git", seen["normal"])
         self.assertIn("⏺ Bash  git status --short", seen["verbose"])

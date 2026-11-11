@@ -375,9 +375,9 @@ def _clip(text, width=160):
 
 # Display only: every level gets the same model, thinking and answers; it changes what Donut shows mid-turn.
 VERBOSITY = {
-    "quiet": ("Quiet", "show only each turn's final answer"),
-    "normal": ("Normal", "show the model's messages as it works (default)"),
-    "verbose": ("Verbose", "also show every tool call and a line on each result"),
+    "quiet": ("Quiet", "show only each turn's final answer; /work hides the worker's messages"),
+    "normal": ("Normal", "show messages while the model works, keep only its final answer (default)"),
+    "verbose": ("Verbose", "keep every message; also show every tool call and a line on each result"),
     "full": ("Full", "also show its thinking and each tool's output"),
 }
 
@@ -1285,9 +1285,9 @@ class Donut(App):
         if kind == "text":
             self.turn_text += text
             self.activity = "writing"
-            if self.verbosity != "quiet":
+            if not self.final_only:
                 self.commit_paragraphs()
-            start = self.message_start if self.verbosity == "quiet" else self.shown
+            start = self.message_start if self.final_only else self.shown
             self.show_pending(self.turn_text[max(start, self.shown) :].strip())
         elif kind == "error":
             self.say("Error: " + str(text), CORAL)
@@ -2145,6 +2145,12 @@ class Donut(App):
         self.say("  This changes only what Donut shows; the models still think and answer in full.", DIM)
         self.status()
 
+    @property
+    def final_only(self):
+        """Quiet and Normal keep only a turn's final answer in the transcript. What the model says between its
+        tool calls shows above the prompt while it works, then goes, so a long turn does not bury its answer."""
+        return self.verbosity in ("quiet", "normal")
+
     def commit_paragraphs(self, final=False):
         """Move finished paragraphs of the streaming answer into the transcript, like Claude Code.
 
@@ -2175,8 +2181,8 @@ class Donut(App):
 
     def answer(self):
         self.flush_thinking()
-        if self.verbosity == "quiet" and self.shown < self.message_start:
-            self.shown = self.message_start  # Quiet: earlier messages of the turn are not shown, only the last.
+        if self.final_only and self.shown < self.message_start:
+            self.shown = self.message_start  # Earlier messages of the turn were progress notes: keep only the last.
         self.commit_paragraphs(final=True)
         self.query_one("#response", Static).update("")
         if not self.turn_text.strip():
@@ -2560,10 +2566,15 @@ class Donut(App):
         self.active = await self.session(self.selected["plan"], self.profiles["plan"])
         self.start_turn("plan")
         prompt = (
-            "Read skills/donut-planner/SKILL.md. Plan only: research and write scoped tickets; do not implement or commit. "
+            "Read skills/donut-planner/SKILL.md. First decide what the request needs. A question, lookup or status "
+            "request: answer it yourself, read-only, and write no ticket. Small housekeeping the user asks of you "
+            "(move or edit a ticket, record a consent, delete a stray generated file): do it yourself. Work that "
+            "changes the project: research it and write scoped tickets; do not implement or commit that work. "
             f"This session's tickets live in {folder}: write new tickets in {folder}to_do/ and leave every other "
-            "tickets folder alone. Respect on_hold and blocked lanes and reserve their identities. Give a brief overview "
-            "when finished; Donut lists created tickets. User request:\n" + text
+            f"tickets folder alone. Respect on_hold and blocked lanes and reserve their identities. Record standing "
+            f"permissions and decisions the user gives in {folder}consents.md. "
+            "Reply with the answer or result first, in a few lines unless asked for detail; give status as one table; "
+            "do not narrate your steps. Donut lists created tickets. User request:\n" + text
         )
         self.say(Text("> " + text, style=f"bold {ORANGE}"))
         self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
@@ -2571,10 +2582,11 @@ class Donut(App):
         self.answer()
         self.log_turn("plan", "plan", text)
         created = [path for key, path in ticket_snapshot(self.project, self.lanes).items() if key not in before]
-        self.say("Tickets created: " + str(len(created)), CORAL)
-        for path in sorted(created):
-            self.say("  " + path.relative_to(self.project).as_posix(), GRAY)
-        self.say("PLANNING COMPLETE · /work next 1", f"bold {ORANGE}")
+        if created:  # A question the planner answered itself made no tickets: nothing to announce.
+            self.say("Tickets created: " + str(len(created)), CORAL)
+            for path in sorted(created):
+                self.say("  " + path.relative_to(self.project).as_posix(), GRAY)
+            self.say("PLANNING COMPLETE · /work next 1", f"bold {ORANGE}")
 
     async def effort_options(self, role):
         """(what the provider calls it, [(level, description)], default level) for the role's model."""

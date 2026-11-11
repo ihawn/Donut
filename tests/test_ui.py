@@ -68,11 +68,17 @@ class UITests(unittest.TestCase):
         runs = [run for line in logo_segments() for run in line]
         self.assertIn(("ok", "orange"), runs)
         self.assertIn(("thing.", "orange"), runs)
-        # The little donut has a round hole of its own, drawn like the big donut's: .--. over (  ) over '--'.
+        # The little donut has one small round hole in its middle row, with sprinkles around it.
         lines = LOGO.splitlines()
-        self.assertIn("(  )", lines[-3])
-        self.assertIn(".--.", lines[-4])
-        self.assertIn("'--'", lines[-2])
+        self.assertIn("()", lines[-3])
+        self.assertNotIn("(", lines[-4] + lines[-2])
+        self.assertNotIn(".--.", lines[-4])
+
+    def test_the_readme_shows_the_same_mascot_as_the_terminal(self):
+        from pathlib import Path
+
+        readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+        self.assertIn(LOGO, readme)
 
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()
