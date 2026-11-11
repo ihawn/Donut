@@ -77,8 +77,15 @@ class UITests(unittest.TestCase):
     def test_the_readme_shows_the_same_mascot_as_the_terminal(self):
         from pathlib import Path
 
-        readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
-        self.assertIn(LOGO, readme)
+        from donut.ui import logo_svg
+
+        root = Path(__file__).parent.parent
+        self.assertIn('src="docs/images/mascot.svg"', (root / "README.md").read_text(encoding="utf-8"))
+        # The image is generated from the terminal's art and colors: python -m donut.ui rewrites it.
+        self.assertEqual((root / "docs/images/mascot.svg").read_text(encoding="utf-8"), logo_svg())
+        svg = logo_svg()
+        self.assertIn('fill="#ffa818">ok</text>', svg)  # The same warm color as in the terminal.
+        self.assertIn(">()</text>", svg)
 
     def test_setup_welcome_does_not_claim_new_installation(self):
         stream = io.StringIO()
