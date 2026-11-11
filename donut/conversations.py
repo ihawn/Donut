@@ -7,6 +7,7 @@ with the run logs under $XDG_STATE_HOME/donut, readable only by the user, becaus
 
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -30,9 +31,35 @@ def load_all():
     return [record for record in records if isinstance(record, dict) and record.get("id")]
 
 
+def transcript_path(record_id):
+    return store_path().with_name("transcripts") / f"{record_id}.jsonl"
+
+
+def transcript(record):
+    """Every exchange of a conversation as (you, answer), in full, for /resume to show.
+
+    A conversation saved before transcripts were kept has only its last few exchanges, each cut short.
+    """
+    try:
+        lines = transcript_path(record["id"]).read_text(encoding="utf-8").splitlines()
+        return [(turn.get("you", ""), turn.get("answer", "")) for turn in map(json.loads, lines)]
+    except (OSError, ValueError, AttributeError):
+        messages = record.get("messages", [])
+        return [(you.get("text", ""), model.get("text", "")) for you, model in zip(messages[::2], messages[1::2])]
+
+
+def display_name(record):
+    """The name /resume lists a conversation under: the name it was given, else its renamed session, else None."""
+    session = record.get("session") or ""
+    # A session still named after its start time (20261109-1712) was never renamed.
+    return record.get("name") or (session if not re.fullmatch(r"\d{8}-\d{4}(-\d+)?", session) else None) or None
+
+
 def _write(records):
     path = store_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for record in records[:-KEEP_RECORDS]:
+        transcript_path(record["id"]).unlink(missing_ok=True)  # A conversation that leaves the list takes its text.
     fd, temp = tempfile.mkstemp(dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
@@ -95,6 +122,10 @@ def record_turn(record_id, project, mode, role, alias, model, provider_id, user_
     del messages[:-KEEP_MESSAGES]
     records.sort(key=lambda r: r.get("updated", 0))
     _write(records)
+    path = transcript_path(record["id"])
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a", encoding="utf-8") as file:
+        file.write(json.dumps({"you": user_text, "answer": answer or ""}) + "\n")
     return record["id"]
 
 

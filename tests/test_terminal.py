@@ -69,6 +69,13 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
                 app.execute("/help")
                 await pilot.pause()
                 self.assertFalse(app.busy)
+                said, say = [], app.say
+                app.say = lambda *args, **kwargs: (said.append(str(args[0])), say(*args, **kwargs))[1]
+                app.execute("/help this isn't a quotation")  # An apostrophe must not stop the command.
+                await pilot.pause()
+                app.say = say
+                self.assertTrue(said)
+                self.assertFalse([line for line in said if "No closing quotation" in line])
                 app.execute("/work")
                 await pilot.pause()
                 menu = app.query_one(Menu)
@@ -458,6 +465,27 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkOutputTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_worker_of_a_named_profile_finds_its_configuration(self):
+        import os
+
+        seen = {}
+
+        async def fake_exec(*args, **kwargs):
+            home = Path(kwargs["env"]["XDG_CONFIG_HOME"])
+            seen["files"] = sorted(str(path.relative_to(home)) for path in home.rglob("*.json"))
+            raise OSError("stop here")
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"DONUT_PROFILE": "personal"}):
+            config = {"aliases": {"local": {"engine": "ollama", "model": "qwen3"}}, "default_model": "local"}
+            with patch("donut.terminal.load", return_value=config):
+                app = Donut(Path(temp))
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch("donut.terminal.asyncio.create_subprocess_exec", side_effect=fake_exec):
+                    with self.assertRaises(OSError):
+                        await app.work_tickets("next 1")
+        self.assertEqual(seen["files"], [str(Path("donut/profiles/personal.json"))])
+
     async def test_progress_updates_the_status_bar_and_output_is_highlighted(self):
         import sys
 
@@ -1409,6 +1437,13 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.say("a new line")
             await pilot.pause(0.2)
             self.assertEqual(log.scroll_y, where)
+            # Back at the end, however the view got there: new output is followed again.
+            log.scroll_end(animate=False)
+            await pilot.pause(0.2)
+            self.assertTrue(app.follow)
+            app.say("another line")
+            await pilot.pause(0.2)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)
 
     async def test_renaming_the_session_renames_its_tickets_folder(self):
         from donut import conversations, workspace
@@ -1475,6 +1510,14 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.event("task", {"id": "a1", "state": "running", "kind": "agent", "description": "Explore"})
             await pilot.pause()
             self.assertIn("⏳ 2 shells running · 1 agent running", str(app.query_one("#status").render()))
+            # Each one has its own line above the prompt, with what it is and how long it has run.
+            running = app.query_one("#background")
+            self.assertTrue(running.has_class("-running"))
+            shown = str(running.render())
+            self.assertIn("⏳ shell running  Poll the build · 0s", shown)
+            self.assertIn("⏳ agent running  Explore", shown)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertEqual(body.count("Background shell started  Poll the build"), 1)
             app.event("task", {"id": "t1", "state": "completed"})
             app.event("task", {"id": "t1", "state": "completed"})  # Reported twice: counted once.
             app.event("task", {"id": "a1", "state": "killed"})
@@ -1483,6 +1526,10 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
             self.assertEqual(body.count("Background shell completed  Poll the build"), 1)
             self.assertIn("Background agent killed  Explore", body)
+            self.assertNotIn("Poll the build", str(running.render()))
+            app.event("task", {"id": "t2", "state": "completed"})
+            await pilot.pause()
+            self.assertFalse(running.has_class("-running"))  # Nothing left: the line goes away.
 
     async def test_the_cursor_blinks_only_in_the_active_window(self):
         from textual import events

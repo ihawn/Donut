@@ -24,7 +24,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 from . import conversations
-from .config import forget_role, load, profile_name, remember_role, role_choice, save
+from .config import config_path, forget_role, load, profile_name, remember_role, role_choice, save
 from .highlight import Highlighter
 from .summaries import claude_context, codex_context, is_connected, mcp_servers, parse_mcp_list, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
@@ -205,12 +205,11 @@ class Transcript(RichLog, can_focus=False):
     def on_mouse_scroll_up(self, event):
         self.app.follow = False  # Reading back: new output no longer pulls the view down.
 
-    def on_mouse_scroll_down(self, event):
-        def back_at_end():
-            if self.scroll_y >= self.max_scroll_y - 1:
-                self.app.follow = True
-
-        self.call_after_refresh(back_at_end)
+    def watch_scroll_y(self, old_value, new_value):
+        super().watch_scroll_y(old_value, new_value)
+        # Back at the end by any means (wheel, scrollbar, keys, the end of a smooth scroll): follow new output again.
+        if new_value >= self.max_scroll_y - 1:
+            self.app.follow = True
 
     def _render_line(self, y, scroll_x, width):
         from rich.segment import Segment
@@ -559,8 +558,13 @@ def shell_candidates(line, project):
     """Names that could finish the last word of a !command: programs for the first word, else paths."""
     head, _, word = line.lstrip("!").lstrip().rpartition(" ")
     if not head.strip() and "/" not in word:
-        names = {f for d in os.environ.get("PATH", "").split(os.pathsep) if os.path.isdir(d)
-                 for f in os.listdir(d) if os.access(os.path.join(d, f), os.X_OK)}
+        names = {
+            f
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if os.path.isdir(d)
+            for f in os.listdir(d)
+            if os.access(os.path.join(d, f), os.X_OK)
+        }
         return word, sorted(n for n in names if n.startswith(word))
     folder, _, prefix = word.rpartition("/")
     dir_part = folder + "/" if (folder or word.startswith("/")) else ""
@@ -638,6 +642,8 @@ class Donut(App):
                  padding: 0 1;}}
     #thinking {{height: 1; padding: 0 2; display: none;}}
     #thinking.-busy {{display: block;}}
+    #background {{height: auto; max-height: 4; padding: 0 2; display: none;}}
+    #background.-running {{display: block;}}
     #usage {{height: auto; max-height: 2; padding: 0 2;}}
     #band {{height: auto; padding: 0 2;}}
     .-focus #status, .-focus #usage, .-focus Footer {{display: none;}}
@@ -746,6 +752,7 @@ class Donut(App):
         yield Transcript(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
         yield Static(id="response")
         yield Static(id="thinking")
+        yield Static(id="background")
         yield Menu(id="menu")
         yield Draft(
             id="draft",
@@ -813,11 +820,32 @@ class Donut(App):
         self.call_after_refresh(self.status)  # Re-pack the status line for the new width.
 
     def tick(self):
-        if self.busy:
-            try:
+        try:
+            if self.busy:
                 self.render_thinking()
-            except NoMatches:
-                pass  # The timer can fire once more while the app shuts down.
+            if self.background_tasks or self.waiting:
+                self.render_background()  # Its elapsed times keep counting between turns.
+        except NoMatches:
+            pass  # The timer can fire once more while the app shuts down.
+
+    def render_background(self):
+        """A line above the prompt for each shell or agent a model left running, with how long it has run."""
+        now = time.monotonic()
+        rows = [(f"{kind} running", text, now - started) for kind, text, started in self.background_tasks.values()]
+        rows += [("waiting for", command, None) for command in self.waiting.values()]
+        widget = self.query_one("#background", Static)
+        widget.set_class(bool(rows), "-running")
+        lines = []
+        for label, text, seconds in rows[:3]:
+            line = Text("⏳ " + label, style=f"bold {TEAL}")
+            if text:
+                line.append("  " + _clip(" ".join(str(text).split()), 80), style=GRAY)
+            if seconds is not None:
+                line.append(" · " + ponytail.duration(seconds), style=CORAL)
+            lines.append(line)
+        if len(rows) > 3:
+            lines.append(Text(f"   and {len(rows) - 3} more in the background", style=DIM))
+        widget.update(Text("\n").join(lines))
 
     @property
     def lanes(self):
@@ -951,6 +979,7 @@ class Donut(App):
             self.activity = activity
         try:
             self.render_thinking()
+            self.render_background()
             self.render_usage()
             self.render_band()
         except NoMatches:
@@ -1535,6 +1564,7 @@ class Donut(App):
 
     def submit(self, text):
         """Run a message now, or, during a turn, queue it; commands that only show something run at once."""
+        self.follow = True  # A new message returns to the end, wherever the view was left.
         if not self.busy:
             self.cancelled = False  # Ctrl+C from here on cancels this message, even before its model is chosen.
             self.execute(text)
@@ -1728,7 +1758,10 @@ class Donut(App):
             self.turn_finished()
 
     async def command(self, text):
-        words = shlex.split(text)
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()  # An apostrophe in plain words ("/review don't skip tests") is not a quotation.
         name, args = words[0], words[1:]
         if self.simple and name in COMPLEX_COMMANDS:
             self.say(f"  {name} is part of complex mode. /complex shows it.", DIM)
@@ -1965,9 +1998,15 @@ class Donut(App):
         if not isinstance(task, dict) or not task.get("id"):
             return
         if task.get("state") == "running":
-            self.background_tasks[task["id"]] = (task.get("kind", "shell"), task.get("description", ""))
+            kind, description = task.get("kind", "shell"), task.get("description", "")
+            if task["id"] not in self.background_tasks:
+                line = Text(f"  ⏳ Background {kind} started", style=TEAL)
+                if description:
+                    line.append("  " + _clip(description, 100), style=DIM)
+                self.say(line)
+                self.background_tasks[task["id"]] = (kind, description, time.monotonic())
         elif task["id"] in self.background_tasks:
-            kind, description = self.background_tasks.pop(task["id"])
+            kind, description, _ = self.background_tasks.pop(task["id"])
             ok = task.get("state") == "completed"
             line = Text(f"  {'✓' if ok else '✗'} Background {kind} {task.get('state')}", style=TEAL if ok else CORAL)
             if description:
@@ -1978,7 +2017,7 @@ class Donut(App):
     def background_summary(self):
         """ "2 shells running · 1 agent running" for the status line, or ""."""
         counts = {}
-        for kind, _ in self.background_tasks.values():
+        for kind, *_ in self.background_tasks.values():
             counts[kind] = counts.get(kind, 0) + 1
         parts = [f"{n} {kind}{'' if n == 1 else 's'} running" for kind, n in sorted(counts.items(), reverse=True)]
         if self.waiting:
@@ -2218,7 +2257,7 @@ class Donut(App):
             return
         prefix = os.path.commonprefix(found)
         if len(prefix) > len(word):
-            editor.insert(prefix[len(word):])
+            editor.insert(prefix[len(word) :])
         elif len(found) > 1:
             stem = editor.text[: len(editor.text) - len(word)]
             rows = [(name, stem + name + ("" if name.endswith("/") else " ")) for name in found[:200]]
@@ -2353,9 +2392,9 @@ class Donut(App):
         if record_id is None:
             rows = [
                 (
-                    (record.get("name") or record.get("title", "(untitled)"))[:56],
+                    (conversations.display_name(record) or record.get("title", "(untitled)"))[:56],
                     record["id"],
-                    (f"{record.get('title', '')[:40]} · " if record.get("name") else "")
+                    (f"{record.get('title', '')[:40]} · " if conversations.display_name(record) else "")
                     + f"{record.get('mode', '?')} · {record.get('model') or record.get('alias')} · "
                     f"{conversations.ago(record.get('updated'))} · {record.get('turns', 0)} turn"
                     f"{'' if record.get('turns') == 1 else 's'}",
@@ -2414,17 +2453,14 @@ class Donut(App):
         resumed.donut_seen = len(self.exchanges)
         line = Text("  Resumed", style=f"bold {ORANGE}")
         line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
-        line.append(f" · {record.get('name') or record.get('title', '')}", style=GRAY)
+        line.append(f" · {conversations.display_name(record) or record.get('title', '')}", style=GRAY)
         line.append(f" · tickets {workspace.relative(self.project, self.lanes)}", style=DIM)
         self.say(line)
         if not record.get("provider_id"):
             self.say("  The provider kept no session for it, so this continues in a fresh one.", DIM)
-        for message in record.get("messages", [])[-6:]:
-            text = " ".join(message.get("text", "").split())
-            if message.get("from") == "you":
-                self.say(Text("  > " + text[:200], style=ORANGE))
-            else:
-                self.say(Text("    " + text[:300] + ("…" if len(text) > 300 else ""), style=DIM))
+        for you, answer in conversations.transcript(record):
+            self.say(Text("> " + you, style=f"bold {ORANGE}"))
+            self.say(markdown(answer.strip() or "(no reply)"))
         self.say("  Continue where you left off.", DIM)
 
     async def ensure_role(self, role):
@@ -2996,9 +3032,8 @@ class Donut(App):
                 # Blocked or stuck tickets go back to the planner, with the same permission mode as the worker.
                 config["aliases"]["donut-planner"] = dict(self.profiles["plan"], permission_mode=self.permission)
                 config["recovery"] = "donut-planner"
-            folder = Path(temp) / "donut"
-            folder.mkdir()
-            path = folder / "config.json"
+            path = config_path(temp)  # Where the worker, started in this window's profile, reads its configuration.
+            path.parent.mkdir(parents=True)
             path.write_text(json.dumps(config))
             path.chmod(0o600)
             env = dict(

@@ -150,6 +150,19 @@ def render_event(line, show_thinking=True, model="Agent", level="full"):
     return ""
 
 
+def without_hidden_block_end(line, shown, state):
+    """What to print for a stream line, minus the closing newline of a block the user's level hides.
+
+    Every block ends with a newline. A hidden thinking block or tool call would leave only that newline, so a
+    turn with many of them showed as a run of empty lines. state remembers whether the open block was shown.
+    """
+    if '"content_block_start"' in line:
+        state["shown"] = bool(shown)
+    elif '"content_block_stop"' in line and not state.get("shown", True):
+        return ""
+    return shown
+
+
 def run_agent(profile, project, prompt, log, summary=False, planner=False, review=False):
     args, env = command(profile, prompt, readonly=summary, review=review)
     log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -162,6 +175,7 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
     level = level if level in LEVELS else "full"
     events = queue.Queue()
     failed = False
+    block = {}
     with log.open("w", encoding="utf-8") as output, log.with_suffix(".jsonl").open("w", encoding="utf-8") as raw:
         os.chmod(log, 0o600)
         os.chmod(log.with_suffix(".jsonl"), 0o600)
@@ -229,6 +243,7 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
                     output.write(rendered)  # The log keeps everything, whatever the user chose to see.
                     output.flush()
                 shown = rendered if summary or level == "full" else render_event(line, model=model, level=level)
+                shown = without_hidden_block_end(line, shown, block)
                 if shown and not presentation:
                     print(styled.feed(shown), end="", flush=True)
                 if presentation:
