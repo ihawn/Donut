@@ -128,6 +128,8 @@ def command(profile, prompt, readonly=False, permission=None, review=False):
             args += ["--model", model]
         if profile.get("effort"):
             args += ["--effort", profile["effort"]]
+        if os.environ.get("DONUT_CHROME") == "1" and not (readonly or review):
+            args += ["--chrome"]  # /chrome is on: workers get the Claude in Chrome tools too.
         args += ["Follow the request on stdin."]
     else:
         args = [

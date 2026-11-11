@@ -252,6 +252,7 @@ INSTANT_COMMANDS = {
     "/verbosity",
     "/routing",
     "/focus",
+    "/chrome",
     "/next",
     "/prev",
 }
@@ -331,6 +332,7 @@ COMMANDS = [
     ("/clear", "Start completely fresh: new conversation, empty screen; tickets are kept"),
     ("/new", "Same as /clear"),
     ("/copy", "Copy the last answer"),
+    ("/chrome", "Give Claude models the Claude in Chrome browser tools (/chrome off removes them)"),
     ("/login", "Sign in again to the current mode's provider account"),
     ("/native", "Open the provider's own client, then come back"),
     ("/help", "List commands and keys"),
@@ -1165,6 +1167,8 @@ class Donut(App):
             permission.append(f"   ⏳ {running}", style=f"bold {TEAL}")
         if self.verbosity != "normal":
             permission.append(f"   {self.verbosity}", style=DIM)
+        if self.config.get("chrome") is True:
+            permission.append("   chrome", style=TEAL)
         entries.append(permission)
         if not self.simple:
             session = Text("session ", style=DIM)
@@ -1484,6 +1488,7 @@ class Donut(App):
             holder["session"] = session
             session.permission = self.permission
             session.read_only = purpose == "review"
+            session.chrome = self.config.get("chrome") is True and purpose != "review"
             session.resume_id = resume
             session.conversation_id = conversation
             try:
@@ -2016,6 +2021,11 @@ class Donut(App):
                 self.focus_view = args[0] == "on" if args else not self.focus_view
                 self.set_class(self.focus_view, "-focus")
                 await self.set_verbosity("quiet" if self.focus_view else "normal")
+        elif name == "/chrome":
+            if args and args[0] not in ("on", "off"):
+                self.say("  Use /chrome [on|off].", DIM)
+            else:
+                await self.set_chrome(args[0] == "on" if args else self.config.get("chrome") is not True)
         elif name == "/verbosity":
             if args and args[0] in VERBOSITY:
                 chosen = args[0]
@@ -2060,11 +2070,11 @@ class Donut(App):
             self.notify("Copied last response (terminal clipboard support required).")
         elif name == "/help" and self.simple:
             self.say(
-                "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued."
+                "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /complex (show every feature) · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued."
             )
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -2213,6 +2223,25 @@ class Donut(App):
         else:
             mark.append(f"{len(rows)} line{'' if len(rows) == 1 else 's'}" if rows else "done", style=DIM)
         self.say(mark)
+
+    async def set_chrome(self, on):
+        """Turn the Claude in Chrome tools on or off for Claude models, and save the choice."""
+        self.config["chrome"] = on
+        try:
+            config = load()
+            config["chrome"] = on
+            save(config)
+        except (ValueError, OSError) as error:
+            self.say(f"Chrome applies to this session only: {error}", DIM)
+        self.say(Text(f"  Chrome · {'on' if on else 'off'}", style=f"bold {ORANGE}"))
+        if on:
+            self.say(
+                "  Claude models get the browser tools of the Claude in Chrome extension, in Chrome signed in to the "
+                "same Claude account. Codex and local models have no such tools.",
+                DIM,
+            )
+        self.say("  It applies to new conversations: /clear starts one. /work uses it from its next run.", DIM)
+        self.status()
 
     async def set_verbosity(self, level):
         self.verbosity = level

@@ -61,6 +61,14 @@ class OptionTests(unittest.TestCase):
             codex, _ = providers.command({"engine": "codex", "model": "gpt-6.1", "effort": "high"}, "task")
             qwen, _ = providers.command({"engine": "ollama", "model": "q", "effort": "high"}, "task")
         self.assertEqual(claude[claude.index("--effort") + 1], "max")
+        self.assertNotIn("--chrome", claude)
+        with patch("shutil.which", return_value="/bin/agent"), patch.dict(os.environ, {"DONUT_CHROME": "1"}):
+            worker, _ = providers.command({"engine": "claude", "model": "opus"}, "task")
+            reviewer, _ = providers.command({"engine": "claude", "model": "opus"}, "task", review=True)
+            other, _ = providers.command({"engine": "codex", "model": "gpt-6.1"}, "task")
+        self.assertIn("--chrome", worker)  # /chrome on reaches the workers of a /work run.
+        self.assertNotIn("--chrome", reviewer)
+        self.assertNotIn("--chrome", other)
         self.assertEqual(codex[codex.index("-c") + 1], 'model_reasoning_effort="high"')
         self.assertNotIn("--effort", qwen)
         with self.assertRaises(ValueError):
@@ -249,6 +257,15 @@ class ClaudeLaunchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0].extra_args, {"allow-dangerously-skip-permissions": None})
         self.assertEqual(seen[1].extra_args, {})  # Review stays read-only.
         self.assertEqual(seen[1].permission_mode, "plan")
+        # /chrome on: the session starts Claude Code with its Claude in Chrome switch; review never does.
+        for read_only in (False, True):
+            session = ClaudeSession(Path("."), {"model": "opus"}, lambda *e: None, None)
+            session.read_only, session.chrome = read_only, True
+            with patch.object(claude_agent_sdk, "ClaudeSDKClient", Client):
+                await session._connect()
+            session.pump.cancel()
+        self.assertEqual(seen[2].extra_args, {"allow-dangerously-skip-permissions": None, "chrome": None})
+        self.assertEqual(seen[3].extra_args, {})
 
 
 class PermissionErrorTests(TerminalEffortTests):
