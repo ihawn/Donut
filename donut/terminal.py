@@ -589,6 +589,27 @@ class Draft(TextArea):
     class Submitted(Message):
         pass
 
+    def recall(self, step):
+        """Step through sent messages (-1 older, +1 newer); False when the key should move the cursor instead."""
+        app = self.app
+        row = self.cursor_location[0]
+        if step < 0 and row == 0 and app.history:
+            if app.history_at is None:
+                app.history_stash = self.text
+                app.history_at = len(app.history) - 1
+            else:
+                app.history_at = max(0, app.history_at - 1)
+        elif step > 0 and app.history_at is not None and row == self.document.line_count - 1:
+            app.history_at += 1
+            if app.history_at >= len(app.history):
+                app.history_at = None
+        else:
+            return False
+        app.recalled = True  # one-shot: the Changed event from this load must not open the slash menu
+        self.load_text(app.history_stash if app.history_at is None else app.history[app.history_at])
+        self.move_cursor(self.document.end)
+        return True
+
     async def _on_key(self, event):
         menu = self.app.query_one(Menu)
         if menu.is_open and event.key in ("up", "down", "enter", "tab", "escape", "ctrl+enter"):
@@ -611,6 +632,10 @@ class Draft(TextArea):
             event.stop()
             event.prevent_default()
             self.app.complete_shell(self)
+            return
+        if event.key in ("up", "down") and self.recall(-1 if event.key == "up" else 1):
+            event.stop()
+            event.prevent_default()
             return
         if event.key in self.SEND_KEYS:
             event.stop()
@@ -689,6 +714,10 @@ class Donut(App):
         self.auto = not soloist and saved_solo.get("alias") == routing.AUTO
         self.route = None  # {"index", "score", "harder"} once this conversation's model is picked.
         self.cancelled = False
+        self.history = []  # Sent messages, oldest first; Up/Down in the prompt walk them.
+        self.history_at = None
+        self.history_stash = ""
+        self.recalled = False
         self.steps = None  # The models auto chooses from, cheapest first; found on first use.
         # Simple or complex changes only what Donut shows and which defaults it starts with, never what a model
         # is told. Until the user has chosen (asked the first time Donut opens), everything is shown.
@@ -1510,12 +1539,13 @@ class Donut(App):
     def on_text_area_changed(self, event):
         menu = self.query_one(Menu)
         text = event.text_area.text
+        recalled, self.recalled = self.recalled, False
         event.text_area.set_class(text.startswith("!"), "-shell")
         if menu.kind == "pick":
             menu.filter(text)
         elif menu.kind == "approve":
             return
-        elif text.startswith("/") and not any(c.isspace() for c in text):
+        elif text.startswith("/") and not any(c.isspace() for c in text) and not recalled:
             if not menu.is_open:
                 menu.open("slash", "Commands", self.slash_rows())
             if not menu.filter(text):
@@ -1531,6 +1561,9 @@ class Donut(App):
         if not text:
             return
         editor.clear()
+        if not self.history or self.history[-1] != text:
+            self.history.append(text)
+        self.history_at = None
         self.submit(text)
 
     def submit(self, text):
