@@ -1547,6 +1547,12 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(running.has_class("-running"))
             shown = str(running.render())
             self.assertIn("⏳ shell running  Poll the build · 0s", shown)
+            self.assertIn("Still working in the background", shown)  # Between turns, it says the work goes on.
+            # A turn that ends with no words says why, so it does not look like a hang.
+            app.turn_text, app.shown, app.message_start = "", 0, 0
+            app.answer()
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("No reply yet · 2 shells running · 1 agent running", body)
             self.assertIn("⏳ agent running  Explore", shown)
             body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
             self.assertEqual(body.count("Background shell started  Poll the build"), 1)
@@ -1562,6 +1568,10 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.event("task", {"id": "t2", "state": "completed"})
             await pilot.pause()
             self.assertFalse(running.has_class("-running"))  # Nothing left: the line goes away.
+            app.turn_text, app.shown, app.message_start = "", 0, 0
+            app.answer()
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("The model ended its turn without a reply.", body)
 
     async def test_the_cursor_blinks_only_in_the_active_window(self):
         from textual import events

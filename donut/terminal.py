@@ -658,7 +658,7 @@ class Donut(App):
                  padding: 0 1;}}
     #thinking {{height: 1; padding: 0 2; display: none;}}
     #thinking.-busy {{display: block;}}
-    #background {{height: auto; max-height: 4; padding: 0 2; display: none;}}
+    #background {{height: auto; max-height: 5; padding: 0 2; display: none;}}
     #background.-running {{display: block;}}
     #usage {{height: auto; max-height: 2; padding: 0 2;}}
     #band {{height: auto; padding: 0 2;}}
@@ -852,6 +852,9 @@ class Donut(App):
         widget = self.query_one("#background", Static)
         widget.set_class(bool(rows), "-running")
         lines = []
+        if rows and not self.busy:
+            # Between turns nothing else moves on screen, so say that the work goes on and what happens next.
+            lines.append(Text("Still working in the background · the model continues when this finishes", style=GRAY))
         for label, text, seconds in rows[:3]:
             line = Text("⏳ " + label, style=f"bold {TEAL}")
             if text:
@@ -2143,6 +2146,14 @@ class Donut(App):
             self.shown = self.message_start  # Quiet: earlier messages of the turn are not shown, only the last.
         self.commit_paragraphs(final=True)
         self.query_one("#response", Static).update("")
+        if not self.turn_text.strip():
+            # A turn with no words (the model only started or checked background work) must not look like a hang.
+            running = self.background_summary()
+            if running:
+                note = f"  No reply yet · {running} · the model continues when the background work finishes."
+            else:
+                note = "  The model ended its turn without a reply."
+            self.say(Text(note, style=DIM))
         if self.follow:
             log = self.query_one(RichLog)
             self.call_after_refresh(lambda: log.scroll_end(animate=False))
