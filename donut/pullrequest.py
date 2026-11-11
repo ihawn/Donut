@@ -175,6 +175,18 @@ def raise_pull_request(project, title, body, files):
     result = _git(project, "push", "-u", "origin", branch)
     if result.returncode:
         raise ValueError("git push failed: " + (result.stderr or result.stdout).strip()[-300:])
+    # A worker the ticket let open a pull request already has one for this branch: use it, do not open a second.
+    existing = subprocess.run(
+        [gh, "pr", "view", branch, "--json", "url,state", "--jq", 'select(.state == "OPEN") | .url'],
+        cwd=project,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        return existing.stdout.strip()
     result = subprocess.run(
         [gh, "pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", "-"],
         cwd=project,

@@ -117,10 +117,28 @@ class GitTests(unittest.TestCase):
         self.calls = root / "gh_calls"
         gh = self.bin / "gh"
         gh.write_text(
-            f"#!{sys.executable}\nimport sys\nopen({str(self.calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n' + sys.stdin.read())\n"
+            f"#!{sys.executable}\nimport os, sys\nopen({str(self.calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n' + sys.stdin.read())\n"
+            # `gh pr view` finds a pull request only when the test says the branch already has one.
+            "if sys.argv[1:3] == ['pr', 'view']:\n"
+            "    print(os.environ.get('EXISTING_PR', ''))\n"
+            "    sys.exit(0 if os.environ.get('EXISTING_PR') else 1)\n"
             "print('https://github.com/example/project/pull/9')\n"
         )
         gh.chmod(0o755)
+
+    @unittest.skipIf(os.name == "nt", "the stand-in gh is a POSIX script")
+    def test_a_branch_whose_worker_already_opened_a_pull_request_gets_no_second_one(self):
+        git(self.project, "switch", "-q", "-c", "feature/print-two")
+        (self.project / "app.py").write_text("print(2)\n")
+        git(self.project, "commit", "-q", "-am", "Print two")  # The worker committed, as its ticket allowed.
+        (self.project / "app.py").write_text("print(2)  # reviewed\n")  # A fix made after the review.
+        existing = "https://github.com/example/project/pull/4"
+        path = str(self.bin) + os.pathsep + os.environ["PATH"]
+        with patch.dict(os.environ, {"PATH": path, "EXISTING_PR": existing}):
+            url = pullrequest.raise_pull_request(self.project, "Print two", "body", ["app.py"])
+        self.assertEqual(url, existing)
+        self.assertNotIn("pr create", self.calls.read_text())
+        self.assertIn("reviewed", git(self.remote, "show", "feature/print-two:app.py"))  # The fix was pushed.
 
     @unittest.skipIf(os.name == "nt", "the stand-in gh is a POSIX script")
     def test_commits_only_the_tickets_files_on_a_new_branch_and_opens_the_pr(self):

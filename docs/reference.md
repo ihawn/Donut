@@ -135,7 +135,7 @@ Configuration is user-local: `$XDG_CONFIG_HOME/donut/config.json` (default `~/.c
 
 ## Profiles
 
-A profile keeps one set of accounts apart from another, for example a work account on Amazon Bedrock and a personal subscription. `donut` uses the default profile. `donut --profile personal` (or `DONUT_PROFILE=personal`) uses the profile named `personal`, and only that one: its window cannot select, list or route to another profile's aliases.
+A profile keeps one set of accounts apart from another, for example a company account and a personal subscription. `donut` uses the default profile. `donut --profile personal` (or `DONUT_PROFILE=personal`) uses the profile named `personal`, and only that one: its window cannot select, list or route to another profile's aliases.
 
 | | Default profile | Profile `NAME` |
 | --- | --- | --- |
