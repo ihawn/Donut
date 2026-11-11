@@ -605,7 +605,12 @@ def dropped_images(text, project):
     """Absolute paths if the whole paste is existing image files (escaped, quoted or file:// form), else []."""
     text = text.strip()
     try:
-        parts = [unquote(text[7:])] if text.startswith("file://") else shlex.split(text)
+        if text.startswith("file://"):
+            parts = [unquote(text[7:])]
+        elif os.name == "nt":  # Windows paths use backslashes, which POSIX splitting would eat; drops come double-quoted.
+            parts = [part.strip("\"'") for part in shlex.split(text, posix=False)]
+        else:
+            parts = shlex.split(text)
     except ValueError:
         parts = [text]
     paths = []

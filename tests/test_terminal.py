@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -269,7 +270,8 @@ class DroppedImageTests(unittest.IsolatedAsyncioTestCase):
     def test_dropped_forms(self):
         with tempfile.TemporaryDirectory() as temp:
             shot = self.make(temp)
-            for text in (shot.replace(" ", "\\ "), "'" + shot + "'", "file://" + shot.replace(" ", "%20"), "shot\\ one.png"):
+            escaped = ('"' + shot + '"', '"shot one.png"') if os.name == "nt" else (shot.replace(" ", "\\ "), "shot\\ one.png")
+            for text in (escaped[0], "'" + shot + "'", "file://" + shot.replace(" ", "%20"), escaped[1]):
                 self.assertEqual(dropped_images(text, str(Path(temp).resolve())), [shot], text)
 
     def test_dropped_rejects_non_images(self):
@@ -287,7 +289,7 @@ class DroppedImageTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 draft = app.query_one(Draft)
-                app.post_message(events.Paste(shot.replace(" ", "\\ ")))
+                app.post_message(events.Paste('"' + shot + '"' if os.name == "nt" else shot.replace(" ", "\\ ")))
                 await pilot.pause()
                 self.assertEqual(draft.text, shlex.quote(shot) + " ")
                 draft.load_text("")
