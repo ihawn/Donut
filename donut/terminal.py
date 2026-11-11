@@ -332,7 +332,7 @@ COMMANDS = [
     ("/clear", "Start completely fresh: new conversation, empty screen; tickets are kept"),
     ("/new", "Same as /clear"),
     ("/copy", "Copy the last answer"),
-    ("/chrome", "Give Claude models the Claude in Chrome browser tools (/chrome off removes them)"),
+    ("/chrome", "Claude models use the Claude in Chrome browser tools by default (/chrome off removes them)"),
     ("/login", "Sign in again to the current mode's provider account"),
     ("/native", "Open the provider's own client, then come back"),
     ("/help", "List commands and keys"),
@@ -1167,8 +1167,8 @@ class Donut(App):
             permission.append(f"   ⏳ {running}", style=f"bold {TEAL}")
         if self.verbosity != "normal":
             permission.append(f"   {self.verbosity}", style=DIM)
-        if self.config.get("chrome") is True:
-            permission.append("   chrome", style=TEAL)
+        if not self.chrome_on:
+            permission.append("   chrome off", style=DIM)
         entries.append(permission)
         if not self.simple:
             session = Text("session ", style=DIM)
@@ -1488,7 +1488,8 @@ class Donut(App):
             holder["session"] = session
             session.permission = self.permission
             session.read_only = purpose == "review"
-            session.chrome = self.config.get("chrome") is True and purpose != "review"
+            # Claude in Chrome is on unless /chrome off was saved; review conversations never get it.
+            session.chrome = self.chrome_on and purpose != "review"
             session.resume_id = resume
             session.conversation_id = conversation
             try:
@@ -2025,7 +2026,7 @@ class Donut(App):
             if args and args[0] not in ("on", "off"):
                 self.say("  Use /chrome [on|off].", DIM)
             else:
-                await self.set_chrome(args[0] == "on" if args else self.config.get("chrome") is not True)
+                await self.set_chrome(args[0] == "on" if args else not self.chrome_on)
         elif name == "/verbosity":
             if args and args[0] in VERBOSITY:
                 chosen = args[0]
@@ -2223,6 +2224,11 @@ class Donut(App):
         else:
             mark.append(f"{len(rows)} line{'' if len(rows) == 1 else 's'}" if rows else "done", style=DIM)
         self.say(mark)
+
+    @property
+    def chrome_on(self):
+        """Claude in Chrome is on unless /chrome off was saved, so it works with no setup."""
+        return self.config.get("chrome") is not False
 
     async def set_chrome(self, on):
         """Turn the Claude in Chrome tools on or off for Claude models, and save the choice."""
