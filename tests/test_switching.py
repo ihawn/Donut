@@ -8,6 +8,7 @@ from unittest.mock import patch
 from donut.terminal import Donut, Draft
 
 Donut.AUTO_REFRESH_QUOTAS = False
+Donut.ASK_INTERFACE = False  # The first-open question has its own test.
 
 
 class Provider:
