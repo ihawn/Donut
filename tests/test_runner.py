@@ -209,6 +209,10 @@ print('finished', p.name)
         self.assertIn("--max-tool-calls", calls[-1])
         summary = calls[-1][calls[-1].index("--prompt") + 1]
         self.assertNotIn("003_task3", summary)
+        # The final report is the table, then an overview, the pull requests and the order to deploy in.
+        for heading in ("Task | Result | Note | PR", "OVERVIEW:", "PULL REQUESTS:", "DEPLOY ORDER:"):
+            self.assertIn(heading, summary)
+        self.assertIn("do not guess", summary)
 
     def test_all_skips_blocked_dependencies(self):
         self.ticket(1, "block-me")
