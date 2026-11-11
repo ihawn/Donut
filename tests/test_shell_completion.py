@@ -40,6 +40,7 @@ class TabKeyTests(unittest.IsolatedAsyncioTestCase):
     async def run_tab(self, text, root, then=()):
         with patch("donut.terminal.install"):
             app = Donut(root)
+            app.AUTO_REFRESH_QUOTAS = False
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 draft = app.query_one(Draft)
