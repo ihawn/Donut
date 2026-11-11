@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 from donut.cli import main
-from donut.config import save, config_path
+from donut.config import load, save, config_path
 from donut.tickets import Ticket, queue_report
 
 
@@ -21,6 +21,16 @@ class CLITests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         save({"aliases": {"worker": {"engine": "codex", "model": ""}}})
+
+    def test_load_corrects_a_dotted_claude_model_id(self):
+        aliases = {
+            "claude": {"engine": "claude", "model": "claude-opus-5.5"},
+            "codex": {"engine": "codex", "model": "gpt-6.1-mini"},
+            "short": {"engine": "claude", "model": "opus"},
+        }
+        save({"aliases": aliases})
+        models = {alias: profile["model"] for alias, profile in load()["aliases"].items()}
+        self.assertEqual(models, {"claude": "claude-opus-5-5", "codex": "gpt-6.1-mini", "short": "opus"})
 
     def test_version_flags_need_no_project_or_config(self):
         for flag in ("-v", "--version"):

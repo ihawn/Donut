@@ -12,7 +12,13 @@ def config_path():
 
 def load():
     path = config_path()
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"aliases": {}}
+    config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"aliases": {}}
+    for profile in config.get("aliases", {}).values():
+        model = profile.get("model")
+        # Claude IDs spell versions with a hyphen: "claude-opus-5.5" is a common slip for "claude-opus-5-5".
+        if profile.get("engine") == "claude" and isinstance(model, str) and model.startswith("claude-"):
+            profile["model"] = re.sub(r"(\d)\.(\d)", r"\1-\2", model)
+    return config
 
 
 def save(config):
