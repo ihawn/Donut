@@ -557,8 +557,13 @@ def shell_candidates(line, project):
     """Names that could finish the last word of a !command: programs for the first word, else paths."""
     head, _, word = line.lstrip("!").lstrip().rpartition(" ")
     if not head.strip() and "/" not in word:
-        names = {f for d in os.environ.get("PATH", "").split(os.pathsep) if os.path.isdir(d)
-                 for f in os.listdir(d) if os.access(os.path.join(d, f), os.X_OK)}
+        names = {
+            f
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if os.path.isdir(d)
+            for f in os.listdir(d)
+            if os.access(os.path.join(d, f), os.X_OK)
+        }
         return word, sorted(n for n in names if n.startswith(word))
     folder, _, prefix = word.rpartition("/")
     dir_part = folder + "/" if (folder or word.startswith("/")) else ""
@@ -636,6 +641,8 @@ class Donut(App):
                  padding: 0 1;}}
     #thinking {{height: 1; padding: 0 2; display: none;}}
     #thinking.-busy {{display: block;}}
+    #background {{height: auto; max-height: 4; padding: 0 2; display: none;}}
+    #background.-running {{display: block;}}
     #usage {{height: auto; max-height: 2; padding: 0 2;}}
     #band {{height: auto; padding: 0 2;}}
     #draft {{height: auto; min-height: 3; max-height: 10; margin: 0 1; border: round {CORAL} 60%;
@@ -743,6 +750,7 @@ class Donut(App):
         yield Transcript(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
         yield Static(id="response")
         yield Static(id="thinking")
+        yield Static(id="background")
         yield Menu(id="menu")
         yield Draft(
             id="draft",
@@ -810,11 +818,32 @@ class Donut(App):
         self.call_after_refresh(self.status)  # Re-pack the status line for the new width.
 
     def tick(self):
-        if self.busy:
-            try:
+        try:
+            if self.busy:
                 self.render_thinking()
-            except NoMatches:
-                pass  # The timer can fire once more while the app shuts down.
+            if self.background_tasks or self.waiting:
+                self.render_background()  # Its elapsed times keep counting between turns.
+        except NoMatches:
+            pass  # The timer can fire once more while the app shuts down.
+
+    def render_background(self):
+        """A line above the prompt for each shell or agent a model left running, with how long it has run."""
+        now = time.monotonic()
+        rows = [(f"{kind} running", text, now - started) for kind, text, started in self.background_tasks.values()]
+        rows += [("waiting for", command, None) for command in self.waiting.values()]
+        widget = self.query_one("#background", Static)
+        widget.set_class(bool(rows), "-running")
+        lines = []
+        for label, text, seconds in rows[:3]:
+            line = Text("⏳ " + label, style=f"bold {TEAL}")
+            if text:
+                line.append("  " + _clip(" ".join(str(text).split()), 80), style=GRAY)
+            if seconds is not None:
+                line.append(" · " + ponytail.duration(seconds), style=CORAL)
+            lines.append(line)
+        if len(rows) > 3:
+            lines.append(Text(f"   and {len(rows) - 3} more in the background", style=DIM))
+        widget.update(Text("\n").join(lines))
 
     @property
     def lanes(self):
@@ -948,6 +977,7 @@ class Donut(App):
             self.activity = activity
         try:
             self.render_thinking()
+            self.render_background()
             self.render_usage()
             self.render_band()
         except NoMatches:
@@ -1956,9 +1986,15 @@ class Donut(App):
         if not isinstance(task, dict) or not task.get("id"):
             return
         if task.get("state") == "running":
-            self.background_tasks[task["id"]] = (task.get("kind", "shell"), task.get("description", ""))
+            kind, description = task.get("kind", "shell"), task.get("description", "")
+            if task["id"] not in self.background_tasks:
+                line = Text(f"  ⏳ Background {kind} started", style=TEAL)
+                if description:
+                    line.append("  " + _clip(description, 100), style=DIM)
+                self.say(line)
+                self.background_tasks[task["id"]] = (kind, description, time.monotonic())
         elif task["id"] in self.background_tasks:
-            kind, description = self.background_tasks.pop(task["id"])
+            kind, description, _ = self.background_tasks.pop(task["id"])
             ok = task.get("state") == "completed"
             line = Text(f"  {'✓' if ok else '✗'} Background {kind} {task.get('state')}", style=TEAL if ok else CORAL)
             if description:
@@ -1969,7 +2005,7 @@ class Donut(App):
     def background_summary(self):
         """ "2 shells running · 1 agent running" for the status line, or ""."""
         counts = {}
-        for kind, _ in self.background_tasks.values():
+        for kind, *_ in self.background_tasks.values():
             counts[kind] = counts.get(kind, 0) + 1
         parts = [f"{n} {kind}{'' if n == 1 else 's'} running" for kind, n in sorted(counts.items(), reverse=True)]
         if self.waiting:
@@ -2209,7 +2245,7 @@ class Donut(App):
             return
         prefix = os.path.commonprefix(found)
         if len(prefix) > len(word):
-            editor.insert(prefix[len(word):])
+            editor.insert(prefix[len(word) :])
         elif len(found) > 1:
             stem = editor.text[: len(editor.text) - len(word)]
             rows = [(name, stem + name + ("" if name.endswith("/") else " ")) for name in found[:200]]
