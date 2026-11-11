@@ -45,6 +45,7 @@ class TabKeyTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 draft = app.query_one(Draft)
                 draft.insert(text)
+                await pilot.pause()  # let the queued Changed event run, or it closes the menu Tab opens
                 await pilot.press("tab")
                 await pilot.pause()
                 menu = app.query_one(Menu)
