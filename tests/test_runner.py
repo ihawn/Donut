@@ -393,6 +393,23 @@ print('finished', p.name)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertLess(result.stdout.index("002_parent.md"), result.stdout.index("001_dependent.md"))
 
+    def test_unticked_acceptance_checks_make_a_ticket_partial_and_decisions_are_listed(self):
+        gaps = (
+            "\n## Acceptance criteria\n\n- [x] Unit tests pass.\n- [ ] Live check passes.\n- [ ] **Human check**: ok.\n"
+        )
+        path = self.ticket(1, "half")
+        path.write_text(path.read_text() + gaps)
+        self.ticket(2, "whole")
+        waiting = self.ticket(3, "waiting", lane="blocked")
+        waiting.write_text(waiting.read_text() + "\n## Completion notes\nNEEDS HUMAN: allow a second login today?\n")
+        result = self.run_batch("all")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)  # Partial is not a failure.
+        self.assertEqual([(r["task"][:3], r["status"]) for r in self.results()], [("001", "Partial"), ("002", "Done")])
+        self.assertEqual(self.results()[0]["unticked"], ["Live check passes."])
+        self.assertIn("Partial: 1 acceptance check not ticked: Live check passes.", result.stdout)
+        self.assertIn("Needs your decision:", result.stdout)
+        self.assertIn("003  allow a second login today?", result.stdout)
+
     def results(self):
         runs = sorted((self.root / "state/donut").glob("run-*"))
         return json.loads((runs[-1] / "results.json").read_text())
