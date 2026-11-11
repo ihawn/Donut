@@ -712,6 +712,7 @@ class Donut(App):
         self.session_profiles = {}
         self.ponytail_installed = {}  # usage_key -> whether Ponytail is installed for that login
         self.spent = 0.0  # Dollars the providers reported for this window's turns, shown on the input box.
+        self.estimates = {}  # Response id -> estimated dollars of the turn in progress, until its cost is reported.
 
     def compose(self):
         yield Transcript(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True)
@@ -1115,6 +1116,10 @@ class Donut(App):
         self.submit(command)
 
     def event(self, kind, text, key=None, source=None):
+        if kind == "spend":
+            self.estimates[text["id"]] = text["dollars"]
+            self.add_spent(None)
+            return
         buffer = getattr(source, "wake_buffer", None)
         if kind == "wake_start":
             if self.busy:
@@ -1403,8 +1408,11 @@ class Donut(App):
             previous = getattr(session, "spent_reported", 0.0)
             self.spent += reported - previous if reported >= previous else reported
             session.spent_reported = reported
+            self.estimates.clear()  # The reported figure covers what was estimated.
+        estimate = sum(self.estimates.values())
         try:
-            self.query_one(Draft).border_subtitle = f"${self.spent:.2f} spent"
+            # "~" marks a figure that includes an estimate for the turn in progress.
+            self.query_one(Draft).border_subtitle = f"{'~' if estimate else ''}${self.spent + estimate:.2f} spent"
         except NoMatches:
             pass
 

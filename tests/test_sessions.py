@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from donut.sessions import CodexSession, ClaudeSession
+from donut.sessions import CodexSession, ClaudeSession, claude_cost
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
@@ -82,6 +82,25 @@ for line in sys.stdin:
 
 
 class UsageParsingTests(unittest.TestCase):
+    def test_a_claude_response_is_priced_from_its_tokens_while_the_turn_runs(self):
+        from claude_agent_sdk import AssistantMessage, TextBlock
+
+        usage = {
+            "input_tokens": 1_000_000,
+            "output_tokens": 100_000,
+            "cache_read_input_tokens": 1_000_000,
+            "cache_creation_input_tokens": 100_000,
+        }
+        self.assertAlmostEqual(claude_cost("claude-opus-5-5", usage), 4 + 2 + 0.2 + 0.5)
+        self.assertAlmostEqual(claude_cost("sonnet", {"output_tokens": 1_000_000}), 10)
+        self.assertEqual(claude_cost("gpt-6.1-mini", usage), 0.0)
+        events = []
+        session = ClaudeSession(Path("."), {}, lambda *args: events.append(args), None)
+        session._handle(AssistantMessage([TextBlock("hi")], "claude-haiku-5-5", usage=usage, message_id="m1"), {})
+        self.assertEqual(events[0][0], "spend")
+        self.assertEqual(events[0][1]["id"], "m1")
+        self.assertAlmostEqual(events[0][1]["dollars"], 0.1 + 0.05 + 0.01 + 0.0125)
+
     def test_claude_and_codex_windows(self):
         from types import SimpleNamespace
         from donut.sessions import claude_usage, codex_usage

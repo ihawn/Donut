@@ -180,6 +180,14 @@ class DraftTests(unittest.IsolatedAsyncioTestCase):
                 first.usage = {"reported_cost_usd": 0.10}  # A new provider process starts over.
                 app.add_spent(first)
                 self.assertEqual(draft.border_subtitle, "$0.85 spent")
+                # During a turn each response adds an estimate; the same response reported twice counts once.
+                app.event("spend", {"id": "a", "dollars": 0.10})
+                app.event("spend", {"id": "a", "dollars": 0.10})
+                app.event("spend", {"id": "b", "dollars": 0.05})
+                self.assertEqual(draft.border_subtitle, "~$1.00 spent")
+                first.usage = {"reported_cost_usd": 0.30}  # The turn ends: the reported cost replaces the estimate.
+                app.add_spent(first)
+                self.assertEqual(draft.border_subtitle, "$1.05 spent")
 
 
 class SlashMenuTests(unittest.IsolatedAsyncioTestCase):
