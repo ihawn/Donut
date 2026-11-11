@@ -24,7 +24,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 from . import conversations
-from .config import forget_role, load, remember_role, role_choice, save
+from .config import forget_role, load, profile_name, remember_role, role_choice, save
 from .highlight import Highlighter
 from .summaries import claude_context, codex_context, is_connected, mcp_servers, parse_mcp_list, render_mcp
 from .sessions import ClaudeSession, CodexSession, QwenSession
@@ -983,6 +983,10 @@ class Donut(App):
             session = Text("session ", style=DIM)
             session.append(self.session_label(), style=f"bold {ORANGE}")
             entries.append(session)
+        if profile_name() != "default":
+            named = Text("profile ", style=DIM)
+            named.append(profile_name(), style=f"bold {TEAL}")
+            entries.append(named)
         self.show_title()
         widget = self.query_one("#status", Static)
         widget.update(pack_entries(entries, widget.content_size.width or self.size.width - 4))

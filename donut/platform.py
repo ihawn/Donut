@@ -32,7 +32,11 @@ def window_command(project):
     """The command a new terminal window runs: this Donut, in project."""
     import sys
 
-    return [sys.executable, "-m", "donut", "-p", str(project)]
+    from .config import profile_name
+
+    command = [sys.executable, "-m", "donut", "-p", str(project)]
+    # A new terminal window may not inherit this one's environment, so the profile is passed in the command.
+    return command if profile_name() == "default" else command + ["--profile", profile_name()]
 
 
 def open_window(project, env=None, which=None, system=None):
