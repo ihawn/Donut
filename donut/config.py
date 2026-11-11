@@ -81,7 +81,7 @@ def check_project(project):
     if profile_name() not in allowed:
         raise ValueError(
             f"This project allows only the {' and '.join(allowed) or 'no'} profile, not {profile_name()} "
-            f"({path}). Start Donut with --profile NAME."
+            f'({path}). Open another folder with -p PATH, or add "{profile_name()}" to that file\'s list.'
         )
 
 
