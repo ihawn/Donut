@@ -213,4 +213,18 @@ class ConversationStoreTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(conversations.store_path().stat().st_mode & 0o777, 0o600)
             self.assertEqual(conversations.for_project(os.path.join(temp, "elsewhere")), [])
+            # /resume shows every exchange in full, from the transcript kept beside the list.
+            shown = conversations.transcript(saved)
+            self.assertEqual(len(shown), 10)
+            self.assertEqual(shown[0], ("ask 0", "x" * 5000))
+            if os.name != "nt":
+                self.assertEqual(conversations.transcript_path(record).stat().st_mode & 0o777, 0o600)
+            # A conversation saved before transcripts were kept shows the exchanges its record still has.
+            conversations.transcript_path(record).unlink()
+            self.assertEqual(len(conversations.transcript(saved)), conversations.KEEP_MESSAGES // 2)
+            # A renamed session names its conversations, even ones saved with no name of their own.
+            self.assertIsNone(conversations.display_name({"session": "20261109-1712"}))
+            self.assertIsNone(conversations.display_name({"session": "20261109-1712-2"}))
+            self.assertEqual(conversations.display_name({"session": "lehans-bot-fix"}), "lehans-bot-fix")
+            self.assertEqual(conversations.display_name({"session": "fix-login", "name": "fix login"}), "fix login")
         self.assertEqual(conversations.ago(1000, now=1000 + 7200), "2h ago")

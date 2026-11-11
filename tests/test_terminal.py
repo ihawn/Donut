@@ -1403,6 +1403,13 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             app.say("a new line")
             await pilot.pause(0.2)
             self.assertEqual(log.scroll_y, where)
+            # Back at the end, however the view got there: new output is followed again.
+            log.scroll_end(animate=False)
+            await pilot.pause(0.2)
+            self.assertTrue(app.follow)
+            app.say("another line")
+            await pilot.pause(0.2)
+            self.assertEqual(log.scroll_y, log.max_scroll_y)
 
     async def test_renaming_the_session_renames_its_tickets_folder(self):
         from donut import conversations, workspace
