@@ -174,6 +174,28 @@ print('finished', p.name)
         self.assertIn("hmm", shown("full"))
         self.assertIn("all good", shown("full"))
 
+    def test_hidden_thinking_and_tool_calls_leave_no_empty_lines(self):
+        def block(kind, **content):
+            start = {"type": "content_block_start", "content_block": {"type": kind, **content}}
+            return [
+                {"type": "stream_event", "event": start},
+                {"type": "stream_event", "event": {"type": "content_block_stop"}},
+            ]
+
+        events = block("thinking") * 3 + block("tool_use", name="Bash") * 3 + block("text", text="Done.")
+        lines = [json.dumps(event) for event in events]
+
+        def shown(level):
+            state = {}
+            parts = [
+                runner.without_hidden_block_end(line, runner.render_event(line, model="m", level=level), state)
+                for line in lines
+            ]
+            return "".join(parts)
+
+        self.assertEqual(shown("normal"), "\n[m]\nDone.\n")  # Six hidden blocks, no empty lines.
+        self.assertEqual(shown("verbose").count("[Tool: Bash]"), 3)
+
     def test_count_and_unique_sessions(self):
         for n in range(1, 4):
             self.ticket(n, f"task{n}")
