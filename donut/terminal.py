@@ -1477,6 +1477,7 @@ class Donut(App):
     def submit(self, text):
         """Run a message now, or, during a turn, queue it; commands that only show something run at once."""
         if not self.busy:
+            self.cancelled = False  # Ctrl+C from here on cancels this message, even before its model is chosen.
             self.execute(text)
         elif is_instant(text):
             self.run_worker(self.instant(text), group="instant")
@@ -2090,6 +2091,7 @@ class Donut(App):
         except NoMatches:
             return  # The app is shutting down.
         if self.queued:
+            self.cancelled = False
             self.call_after_refresh(self.execute, self.queued.pop(0))
 
     async def start_wait(self, session, command):
@@ -2694,7 +2696,6 @@ class Donut(App):
 
         Returns False when the user cancelled while the request was being rated; nothing is sent then.
         """
-        self.cancelled = False
         self.activity, self.detail = "choosing a model", ""
         self.status()
         steps = await self.routing_steps()

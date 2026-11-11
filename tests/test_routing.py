@@ -230,21 +230,28 @@ class AutoTests(RoutingSetup):
         self.assertTrue(self.log()[0]["fallback"])
 
     async def test_cancelling_while_the_request_is_rated_sends_nothing(self):
+        stopped = asyncio.Event()
+
         async def slow(rater, text):
             rater.prompts.append(text)
-            await asyncio.sleep(0.4)
+            await asyncio.wait_for(stopped.wait(), 20)  # Rating takes until it is interrupted.
+
+        async def interrupt(rater):
+            stopped.set()
 
         async with self.app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             await self.send(pilot, "/solo")
-            with patch.object(FakeClaude, "query", slow), patch.object(FakeClaude, "interrupt", create=True) as stop:
-                stop.side_effect = lambda: asyncio.sleep(0)
+            with patch.object(FakeClaude, "query", slow), patch.object(FakeClaude, "interrupt", interrupt, create=True):
                 draft = self.app.query_one(Draft)
                 draft.insert("do something slow")
                 await pilot.press("enter")
-                await pilot.pause(0.15)
+                for _ in range(500):  # Wait until the request is being rated, however slow the machine.
+                    await pilot.pause(0.02)
+                    if self.raters():
+                        break
                 await pilot.press("ctrl+c")
-                for _ in range(100):
+                for _ in range(500):
                     await pilot.pause(0.02)
                     if not self.app.busy:
                         break
