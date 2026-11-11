@@ -277,6 +277,15 @@ def setup(project, root=None):
             raise ValueError("Unknown default alias")
         config["default_model"] = default
         save(config)
+    if config.get("profile") not in ("engineer", "business"):
+        # Asked once; /profile changes it later. It only chooses which version of the interface is shown.
+        print(paint("\n  HOW YOU WORK\n  " + "─" * 42, "teal"))
+        print("  engineer: planner, worker, reviewer and tickets, with a model you choose for each.")
+        print("  business: one conversation; Donut picks the model for each request.")
+        config["profile"] = choose("Are you an engineer or a business user?", ["engineer", "business"], "engineer")
+        if config["profile"] == "business":
+            config.setdefault("roles", {})["solo"] = {"alias": "auto", "model": ""}
+        save(config)
     install(project, Path.home())
     print(paint("\n  READY  /  Setup saved", "teal"))
     for role, key in [("Planner", "planner"), ("Worker", "default_model")]:

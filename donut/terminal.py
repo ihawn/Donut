@@ -30,7 +30,7 @@ from .summaries import claude_context, codex_context, is_connected, mcp_servers,
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
-from . import background, effort, plugins, ponytail, workspace
+from . import background, effort, plugins, ponytail, routing, workspace
 from .platform import copy_native, open_window, window_command
 from .platform import process_options
 from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
@@ -241,7 +241,37 @@ class Transcript(RichLog, can_focus=False):
 
 
 # Commands that only show something (or change only what is shown), so they run at once even mid-turn.
-INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity"}
+INSTANT_COMMANDS = {"/usage", "/help", "/copy", "/context", "/mcp", "/plugin", "/verbosity", "/routing"}
+# What the business profile leaves out of the interface: the roles, modes and tickets engineers work with.
+PROFILES = {
+    "engineer": "Planner, worker, reviewer and tickets, with a model you choose for each",
+    "business": "One conversation; Donut picks the model for each request",
+}
+ENGINEER_COMMANDS = {
+    "/plan",
+    "/work",
+    "/review",
+    "/solo",
+    "/planner",
+    "/worker",
+    "/reviewer",
+    "/soloist",
+    "/session",
+}
+BUSINESS_PLACEHOLDER = "Ask anything or say what to change, or type / for commands"
+# Commands that talk to the current model's provider, so they need a model to have been picked.
+NEEDS_MODEL = {"/plugin", "/mcp", "/context", "/login", "/native", "/effort"}
+
+
+def session_class(engine):
+    """The provider session class for an engine, or None when Donut has none."""
+    if engine == "claude":
+        return ClaudeSession
+    if engine == "codex":
+        return CodexSession
+    if engine in ("ollama", "openai"):
+        return QwenSession
+    return None
 
 
 def is_instant(text):
@@ -263,6 +293,9 @@ COMMANDS = [
     ("/reviewer", "Choose who reviews: same as planner, any model, or off"),
     ("/soloist", "Choose the soloist's account and model"),
     ("/model", "Choose the model for the current mode"),
+    ("/harder", "Auto picked too small a model: move this conversation one model up"),
+    ("/routing", "Show the models auto chooses from and what it picked"),
+    ("/profile", "Engineer or business: which version of Donut's interface you see"),
     ("/resume", "Resume an earlier conversation in its mode, model and tickets session"),
     ("/session", "Switch this window's tickets folder, .donut/<session>/, or start a new one"),
     ("/rename", "Name this session; its tickets folder becomes .donut/<name>/"),
@@ -620,6 +653,16 @@ class Donut(App):
         self.selected["solo"], self.profiles["solo"] = (
             (soloist[0], copy.deepcopy(soloist[1])) if soloist else (None, {})
         )
+        # Auto: the soloist's model is picked for each conversation from how difficult its first request is.
+        saved_solo = (self.config.get("roles") or {}).get("solo") or {}
+        self.auto = not soloist and saved_solo.get("alias") == routing.AUTO
+        self.route = None  # {"index", "score", "harder"} once this conversation's model is picked.
+        self.cancelled = False
+        self.steps = None  # The models auto chooses from, cheapest first; found on first use.
+        # The profile changes only what Donut shows and which defaults it starts with, never what a model is told.
+        self.profile_name = self.config.get("profile") if self.config.get("profile") in PROFILES else "engineer"
+        if self.business:
+            self.mode = "solo"
         # Who reviews each finished ticket: "planner" follows the planner (the default), "off" disables review,
         # and "chosen" keeps the alias and model picked with /review whatever the planner becomes.
         roles = self.config.get("roles") or {}
@@ -674,7 +717,7 @@ class Donut(App):
             id="draft",
             soft_wrap=True,
             show_line_numbers=False,
-            placeholder=MODE_PLACEHOLDERS["plan"],
+            placeholder=self.placeholder(),
         )
         yield Static(id="status")
         yield Static(id="band")
@@ -757,13 +800,34 @@ class Donut(App):
     def session_key(self, alias, profile, purpose=None):
         return (f"{alias}@{purpose}" if purpose else alias, profile.get("model"))
 
+    @property
+    def business(self):
+        return self.profile_name == "business"
+
+    def check_action(self, action, parameters):
+        """The business profile has one mode, so the mode key is neither shown nor active."""
+        return not (action == "modes" and self.business)
+
+    def placeholder(self):
+        return BUSINESS_PLACEHOLDER if self.business else MODE_PLACEHOLDERS[self.mode]
+
     def set_mode(self, mode):
         self.mode = mode
         try:
-            self.query_one(Draft).placeholder = MODE_PLACEHOLDERS[mode]
+            self.query_one(Draft).placeholder = self.placeholder()
         except NoMatches:
             pass
         self.status()
+
+    def solo_label(self):
+        """What the soloist is set to, for the status line: its model, or auto and what auto picked."""
+        alias, profile = self.selected.get("solo"), self.profiles.get("solo", {})
+        if not self.auto:
+            return model_name(profile, alias) if profile else "not set"
+        if not self.route or not profile:
+            return "auto"
+        score = self.route.get("score")
+        return f"auto → {model_name(profile, alias)}" + (f" · {score}/10" if score else "")
 
     def sync_reviewer(self):
         """Follow the planner while the reviewer is the default; a chosen reviewer never changes with it."""
@@ -793,7 +857,8 @@ class Donut(App):
         if self.running:
             role, alias, profile = self.running
             line.append(model_name(profile, alias), style=f"bold {ORANGE}")
-            line.append(f"  {ROLE_TITLES.get(role, role)}", style=DIM)
+            if not self.business:
+                line.append(f"  {ROLE_TITLES.get(role, role)}", style=DIM)
             line.append(f"  is {self.activity or 'thinking'}", style=GRAY)
             if self.detail:
                 detail = self.detail if len(self.detail) <= 40 else self.detail[:39] + "…"
@@ -814,19 +879,30 @@ class Donut(App):
         title = Text("  DONUT", style=f"bold {ORANGE}")
         title.append("  /  " + release_version(), style=CORAL)
         title.append("   " + str(self.project), style=DIM)
-        title.append("   tickets " + workspace.relative(self.project, self.lanes), style=DIM)
-        self.say(title)
-        self.say(Text("  The planner writes the tickets. The worker takes them one at a time.", style=GRAY))
+        if self.business:
+            self.say(title)
+            self.say(Text("  Ask for what you need. Donut picks the model for each conversation.", style=GRAY))
+            hints = (
+                ("/harder", "stronger model"),
+                ("/clear", "new conversation"),
+                ("/", "commands"),
+                ("Shift+Enter", "newline"),
+            )
+        else:
+            title.append("   tickets " + workspace.relative(self.project, self.lanes), style=DIM)
+            self.say(title)
+            self.say(Text("  The planner writes the tickets. The worker takes them one at a time.", style=GRAY))
+            hints = (
+                ("/plan", "tickets"),
+                ("/work", "build"),
+                ("/review", "check"),
+                ("/solo", "direct"),
+                ("/", "commands"),
+                ("!", "shell"),
+                ("Shift+Enter", "newline"),
+            )
         hint = Text("  ")
-        for key, description in (
-            ("/plan", "tickets"),
-            ("/work", "build"),
-            ("/review", "check"),
-            ("/solo", "direct"),
-            ("/", "commands"),
-            ("!", "shell"),
-            ("Shift+Enter", "newline"),
-        ):
+        for key, description in hints:
             hint.append(key, style=f"bold {ORANGE}")
             hint.append(" " + description + "   ", style=DIM)
         self.say(hint)
@@ -851,9 +927,15 @@ class Donut(App):
             )
         ]
         running_role = self.running[0] if self.busy and self.running else None
-        for role, title in ROLE_TITLES.items():
+        # The business profile shows one entry, the model in use, in place of the mode badge and the four roles.
+        roles = {"solo": "model"} if self.business else ROLE_TITLES
+        if self.business:
+            entries = []
+        for role, title in roles.items():
             alias, profile = self.selected.get(role), self.profiles.get(role, {})
-            if not profile:
+            if role == "solo" and (self.auto or not profile):
+                value = self.solo_label()
+            elif not profile:
                 value = "off" if role == "review" else "not set"
             elif role == "review" and self.reviewer == "planner":
                 value = f"{model_name(profile, alias)} (= planner)"
@@ -870,7 +952,8 @@ class Donut(App):
                 focus = not running_role and role == self.role
                 entry.append("○ ", style=f"bold {ORANGE}" if focus else DIM)
                 entry.append(title + " ", style=GRAY if focus else DIM)
-                entry.append(value, style=f"bold {GRAY}" if focus and profile else (GRAY if profile else DIM))
+                known = bool(profile) or (role == "solo" and self.auto)
+                entry.append(value, style=f"bold {GRAY}" if focus and known else (GRAY if known else DIM))
             entries.append(entry)
         label = PERMISSION_MODES[self.permission][0].lower()
         permission = Text()
@@ -887,9 +970,10 @@ class Donut(App):
         if self.verbosity != "normal":
             permission.append(f"   {self.verbosity}", style=DIM)
         entries.append(permission)
-        session = Text("session ", style=DIM)
-        session.append(self.session_label(), style=f"bold {ORANGE}")
-        entries.append(session)
+        if not self.business:
+            session = Text("session ", style=DIM)
+            session.append(self.session_label(), style=f"bold {ORANGE}")
+            entries.append(session)
         self.show_title()
         widget = self.query_one("#status", Static)
         widget.update(pack_entries(entries, widget.content_size.width or self.size.width - 4))
@@ -986,7 +1070,11 @@ class Donut(App):
                 self.query_one(Draft).clear()
 
     def slash_rows(self):
-        rows = [(name, name, description) for name, description in COMMANDS]
+        rows = [
+            (name, name, description)
+            for name, description in COMMANDS
+            if not (self.business and name in ENGINEER_COMMANDS)
+        ]
         session = self.sessions.get(self.session_key(self.selected[self.role], self.profiles[self.role], self.purpose))
         if isinstance(session, ClaudeSession):
             for command in session.info.get("commands", []):
@@ -1180,15 +1268,7 @@ class Donut(App):
                 return switched
         if key not in self.sessions:
             engine = profile.get("engine")
-            cls = (
-                ClaudeSession
-                if engine == "claude"
-                else CodexSession
-                if engine == "codex"
-                else QwenSession
-                if engine in ("ollama", "openai")
-                else None
-            )
+            cls = session_class(engine)
             if not cls:
                 raise ValueError(
                     "Persistent sessions for this engine are not implemented yet. Use /native for its full interactive client."
@@ -1416,7 +1496,7 @@ class Donut(App):
 
     def action_modes(self):
         """F3 cycles plan, work, review and solo."""
-        if not self.busy:
+        if not self.busy and not self.business:
             self.execute("/" + {"plan": "work", "work": "review", "review": "solo", "solo": "plan"}[self.mode])
 
     async def start_fresh(self):
@@ -1426,6 +1506,7 @@ class Donut(App):
         """
         sessions, self.sessions = list(self.sessions.values()), {}
         self.threads, self.exchanges = {}, []
+        self.forget_route()
         self.background_tasks = {}
         self.ponytail_installed = {}
         for session in sessions:
@@ -1493,6 +1574,7 @@ class Donut(App):
                 pass
             return
         menu = self.query_one(Menu)
+        self.cancelled = True  # Seen by a step that runs before the turn itself, such as auto choosing a model.
         if self.picking and not self.picking.done():
             self.picking.set_result(None)
         elif menu.is_open:
@@ -1550,7 +1632,8 @@ class Donut(App):
                 self.child = None
                 self.turn_finished()
             return
-        if not self.selected[self.role] and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto")):
+        unset = not self.selected[self.role] and not (self.role == "solo" and self.auto)
+        if unset and not text.startswith(("/help", "/exit", "/quit", "/permissions", "/auto", "/profile")):
             self.say("Run donut setup to configure an account first.")
             return
         self.busy = True
@@ -1581,8 +1664,20 @@ class Donut(App):
     async def command(self, text):
         words = shlex.split(text)
         name, args = words[0], words[1:]
+        if self.business and name in ENGINEER_COMMANDS:
+            self.say(f"  {name} belongs to the engineer profile. /profile engineer shows it.", DIM)
+            return
+        if name in NEEDS_MODEL and self.role == "solo" and self.auto and not self.profiles.get("solo"):
+            self.say(f"  Send a message first: auto picks the model then, and {name} applies to it.", DIM)
+            return
         if name in ("/exit", "/quit"):
             await self.action_quit()
+        elif name == "/profile":
+            await self.choose_profile(args[0] if args else None)
+        elif name == "/harder":
+            await self.harder()
+        elif name == "/routing":
+            await self.show_routing()
         elif name in ("/planner", "/worker", "/soloist"):
             role = {"/planner": "plan", "/worker": "work", "/soloist": "solo"}[name]
             await self.choose_model(role, args[0] if args else None)
@@ -1593,7 +1688,7 @@ class Donut(App):
                 return
             self.set_mode("solo")
             line = Text("  Solo mode", style=f"bold {TEAL}")
-            line.append(f" · {model_name(self.profiles['solo'], self.selected['solo'])}", style=f"bold {ORANGE}")
+            line.append(f" · {self.solo_label()}", style=f"bold {ORANGE}")
             self.say(line)
             self.say(
                 "  Messages go straight to the soloist, like Claude Code: no planner, tickets or review. "
@@ -1706,9 +1801,13 @@ class Donut(App):
         elif name == "/copy":
             self.copy_text(self.last_answer)
             self.notify("Copied last response (terminal clipboard support required).")
+        elif name == "/help" and self.business:
+            self.say(
+                "/harder (a stronger model for this conversation) · /routing · /model · /resume · /clear (or /new) · /permissions [ask|accept_edits|auto|full] · /auto · /effort · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /copy · /project [PATH] · /rename · /login · /native · /profile [engineer|business] · /exit\nDonut rates your first message in a conversation and picks the model for it; the model stays until /clear. !COMMAND runs a shell command in the project. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued."
+            )
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /profile [engineer|business] · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -1906,9 +2005,11 @@ class Donut(App):
 
     async def solo(self, text):
         """Send the message to the soloist as is, in its own conversation, the way Claude Code would."""
+        self.say(Text("> " + text, style=f"bold {TEAL}"))
+        if self.auto and self.route is None and not await self.choose_route(text):
+            return
         self.active = await self.session(self.selected["solo"], self.profiles["solo"], "solo")
         self.start_turn("solo")
-        self.say(Text("> " + text, style=f"bold {TEAL}"))
         self.turn_text, self.shown, self.message_start, self.turn_tools = "", 0, 0, []
         await self.ask(text)
         self.answer()
@@ -2154,6 +2255,8 @@ class Donut(App):
     async def resume_conversation(self, record_id=None):
         """Reopen an earlier conversation: switch to its mode and model, then continue the provider's session."""
         records = conversations.for_project(self.project)
+        if self.business:
+            records = [record for record in records if record.get("mode") == "solo"]
         if not records:
             self.say("No earlier conversations in this project yet.", DIM)
             return
@@ -2188,10 +2291,15 @@ class Donut(App):
         self.selected[role], self.profiles[role] = alias, copy.deepcopy(profile)
         if role == "review":
             self.reviewer = "chosen"
-        try:
-            remember_role(role, alias, profile.get("model"))
-        except (ValueError, OSError):
-            pass
+        if role == "solo" and self.auto:
+            # The resumed conversation keeps the model it had; auto stays on for the next new conversation.
+            steps = await self.routing_steps()
+            self.route = {"index": routing.position(steps, alias, profile), "score": None, "harder": 0}
+        else:
+            try:
+                remember_role(role, alias, profile.get("model"))
+            except (ValueError, OSError):
+                pass
         self.sync_reviewer()
         self.set_mode(mode)
         if record.get("session") and workspace.valid(record["session"]):
@@ -2231,7 +2339,7 @@ class Donut(App):
 
     async def ensure_role(self, role):
         """Entering a mode asks for its model only when none is set. Returns whether one is set now."""
-        if self.profiles.get(role):
+        if self.profiles.get(role) or (role == "solo" and self.auto):
             return True
         if role == "review":
             await self.choose_reviewer(allow_off=False)
@@ -2438,17 +2546,29 @@ class Donut(App):
     async def choose_model(self, role, alias=None):
         """Pick the account and model for one role (planner, worker or soloist). Only that role changes."""
         aliases = self.config.get("aliases", {})
+        automatic = (routing.AUTO, None)
         if alias is not None:
-            if alias not in aliases:
+            if role == "solo" and alias == routing.AUTO and alias not in aliases:
+                selected = automatic
+            elif alias not in aliases:
                 raise ValueError(
                     f"Use {ROLE_COMMANDS[role]} ALIAS with a configured alias, or {ROLE_COMMANDS[role]} alone to pick."
                 )
-            selected = (alias, dict(aliases[alias]))
+            else:
+                selected = (alias, dict(aliases[alias]))
         else:
             rows = await self.model_rows()
-            selected = await self.choose("Account and model for the " + ROLE_TITLES[role], rows) if rows else None
+            if role == "solo" and rows:
+                rows.append(("auto  picks a model for each conversation from how hard its request is", automatic))
+            title = "Model" if self.business else "Account and model for the " + ROLE_TITLES[role]
+            selected = await self.choose(title, rows) if rows else None
         if not selected:
             return
+        if selected == automatic:
+            self.set_auto()
+            return
+        if role == "solo":
+            self.auto, self.route = False, None
         self.selected[role], self.profiles[role] = selected[0], copy.deepcopy(selected[1])
         try:
             remember_role(role, selected[0], selected[1].get("model"))
@@ -2462,10 +2582,12 @@ class Donut(App):
         self.sync_reviewer()
         self.status()
 
-    async def model_rows(self):
-        """(label, (alias, profile)) for every model each configured account offers."""
+    async def model_rows(self, engines=None):
+        """(label, (alias, profile)) for every model each configured account offers (of these engines only)."""
         rows = []
         for alias, profile in self.config["aliases"].items():
+            if engines and profile.get("engine") not in engines:
+                continue
             self.status("discovering models for " + alias)
             try:
                 if profile["engine"] in ("claude", "codex"):
@@ -2490,6 +2612,228 @@ class Donut(App):
             except Exception as error:
                 self.say(f"{alias}: model discovery failed: {error}")
         return rows
+
+    def forget_route(self):
+        """A new conversation: auto picks its model again from the next first message."""
+        self.route = None
+        if self.auto:
+            self.selected["solo"], self.profiles["solo"] = None, {}
+
+    def set_auto(self):
+        """Make the soloist auto: each conversation's model is picked from its first request."""
+        self.auto = True
+        self.forget_route()
+        try:
+            remember_role("solo", routing.AUTO, "")
+        except (ValueError, OSError) as error:
+            self.say(f"Model choice applies to this session only: {error}", DIM)
+        line = Text("  Soloist: " if not self.business else "  Model: ", style=GRAY)
+        line.append("auto", style=f"bold {ORANGE}")
+        self.say(line)
+        self.say(
+            "  Donut rates the first message of each conversation from 1 to 10 and picks the model for it. "
+            "The model stays for the conversation; /harder moves one model up.",
+            DIM,
+        )
+        self.status()
+
+    async def routing_steps(self):
+        """The models auto chooses from, cheapest first: from the configuration, or from the accounts' models."""
+        if self.steps is None:
+            steps = routing.configured(self.config)
+            if not steps:
+                rows = await self.model_rows(engines=("claude", "codex"))
+                steps = routing.build([(alias, profile, label.split("  ", 1)[-1]) for label, (alias, profile) in rows])
+            self.steps = steps
+        return self.steps
+
+    async def one_shot(self, profile, prompt, limit=90):
+        """Ask a model one question in a throwaway read-only session and return its answer.
+
+        Nothing is shown in the transcript and the session takes no part in any conversation.
+        """
+        cls = session_class(profile.get("engine"))
+        if not cls:
+            raise ValueError("No session for this engine.")
+        parts = []
+
+        def emit(kind, data, *rest):
+            if kind == "text":
+                parts.append(data)
+
+        async def deny(name, details):
+            return "no"
+
+        session = cls(self.project, profile, emit, deny)
+        session.permission, session.read_only = "ask", True
+        session.resume_id = session.conversation_id = None
+        await session.connect()
+        self.active = session  # So Ctrl+C can interrupt it.
+        try:
+            await asyncio.wait_for(session.query(prompt), limit)
+        finally:
+            self.active = None
+            await session.close()
+        return "".join(parts)
+
+    def use_step(self, index, score, harder=0):
+        step = self.steps[index]
+        self.route = {"index": index, "score": score, "harder": harder}
+        self.selected["solo"], self.profiles["solo"] = step["alias"], copy.deepcopy(step["profile"])
+        self.status()
+        return step
+
+    async def choose_route(self, text):
+        """Rate the conversation's first request and fix its model: the first one whose limit covers the score.
+
+        Returns False when the user cancelled while the request was being rated; nothing is sent then.
+        """
+        self.cancelled = False
+        self.activity, self.detail = "choosing a model", ""
+        self.status()
+        steps = await self.routing_steps()
+        if not steps:
+            raise ValueError(
+                'Auto needs a Claude or Codex account to choose from, or "routing": {"models": [...]} in the '
+                "configuration. /model picks one model instead."
+            )
+        alias, profile = routing.classifier(self.config, steps)
+        score, problem = None, ""
+        self.activity = "choosing a model"
+        self.status()
+        try:
+            score = routing.parse_score(await self.one_shot(profile, routing.classifier_prompt(text)))
+            if score is None:
+                problem = "the request could not be rated"
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            problem = f"the request could not be rated ({str(error)[:80]})"
+        if self.cancelled:
+            self.say("  Cancelled before a model was chosen; nothing was sent.", DIM)
+            return False
+        index = routing.pick(steps, score) if score else routing.fallback(steps)
+        step = self.use_step(index, score)
+        routing.log(
+            "route",
+            score=score,
+            model=step["profile"].get("model"),
+            alias=step["alias"],
+            position=index + 1,
+            of=len(steps),
+            classifier=profile.get("model") or alias,
+            fallback=score is None,
+            length=len(text),
+        )
+        line = Text("  auto", style=f"bold {ORANGE}")
+        line.append(f" · difficulty {score}/10" if score else f" · {problem}; using the middle model", style=GRAY)
+        line.append(" → ", style=DIM)
+        line.append(step["name"], style=f"bold {TEAL}")
+        if index < len(steps) - 1:
+            line.append("   /harder for a stronger model", style=DIM)
+        self.say(line)
+        return True
+
+    async def harder(self):
+        """/harder: move this conversation one model up the list. The conversation carries over."""
+        if not self.auto:
+            self.say("  /harder works when the model is auto. /model lets you choose auto.", DIM)
+            return
+        if self.route is None:
+            self.say("  Send a message first: auto picks this conversation's model then.", DIM)
+            return
+        steps = await self.routing_steps()
+        index = self.route.get("index")
+        if index is None:
+            self.say("  This conversation's model is not one auto chooses from. /model picks another.", DIM)
+            return
+        if index >= len(steps) - 1:
+            self.say(f"  {steps[index]['name']} is already the strongest model auto chooses from.", DIM)
+            return
+        before = steps[index]
+        step = self.use_step(index + 1, self.route.get("score"), self.route.get("harder", 0) + 1)
+        routing.log(
+            "harder",
+            score=self.route.get("score"),
+            model=step["profile"].get("model"),
+            alias=step["alias"],
+            position=index + 2,
+            of=len(steps),
+            was=before["profile"].get("model"),
+        )
+        line = Text("  harder", style=f"bold {ORANGE}")
+        line.append(" → ", style=DIM)
+        line.append(step["name"], style=f"bold {TEAL}")
+        line.append(f"  (was {before['name']}). It continues this conversation from your next message.", style=DIM)
+        self.say(line)
+
+    async def show_routing(self):
+        """/routing: the models auto chooses from, the scores each takes, and what this conversation got."""
+        if self.active is not None and self.steps is None:
+            self.say("  The model list is still being found; try again in a moment.", DIM)
+            return
+        steps = await self.routing_steps()
+        if not steps:
+            self.say(
+                '  No models to choose from: add a Claude or Codex account, or "routing" in the configuration.', DIM
+            )
+            return
+        self.say(Text("  Auto chooses from (cheapest first)", style=f"bold {ORANGE}"))
+        current = (self.route or {}).get("index") if self.auto else None
+        low = 1
+        for index, step in enumerate(steps):
+            line = Text("  ● " if index == current else "  ○ ", style=f"bold {ORANGE}" if index == current else DIM)
+            line.append(
+                f"{low}–{step['up_to']}".ljust(6) if low < step["up_to"] else f"{step['up_to']}".ljust(6), style=GRAY
+            )
+            line.append(step["name"], style=f"bold {TEAL}" if index == current else GRAY)
+            line.append(f"  {step['alias']}", style=DIM)
+            self.say(line)
+            low = step["up_to"] + 1
+        alias, profile = routing.classifier(self.config, steps)
+        rated = Text("  Requests are rated by ", style=DIM)
+        rated.append(model_name(profile, alias), style=GRAY)
+        if profile.get("effort"):
+            rated.append(f" at {profile['effort']} effort", style=DIM)
+        self.say(rated)
+        if not self.auto:
+            self.say("  Auto is off: the model is the one you chose. /model lets you choose auto.", DIM)
+        elif self.route and self.route.get("score"):
+            self.say(f"  This conversation was rated {self.route['score']}/10.", DIM)
+
+    async def choose_profile(self, name=None):
+        """/profile [engineer|business]: which version of the interface is shown. Models are told nothing of it."""
+        if name is None:
+            rows = [
+                (f"{key}" + ("  · now" if key == self.profile_name else ""), key, description)
+                for key, description in PROFILES.items()
+            ]
+            name = await self.choose("Profile", rows)
+            if name is None:
+                return
+        if name not in PROFILES:
+            raise ValueError("Use /profile engineer or /profile business.")
+        self.profile_name = name
+        try:
+            config = load()
+            config["profile"] = name
+            save(config)
+        except (ValueError, OSError) as error:
+            self.say(f"Profile applies to this session only: {error}", DIM)
+        self.config["profile"] = name
+        self.refresh_bindings()
+        line = Text("  Profile: ", style=GRAY)
+        line.append(name, style=f"bold {ORANGE}")
+        line.append("  " + PROFILES[name], style=DIM)
+        self.say(line)
+        if self.business:
+            self.set_mode("solo")
+            if not self.auto:
+                self.set_auto()
+        else:
+            self.set_mode(self.mode)
+            self.say("  /plan, /work, /review and the role commands are back. Your models are unchanged.", DIM)
+        self.status()
 
     async def usage(self):
         """How much of each plan is left, as the usage bar shows it but with every window and reset time."""
@@ -2622,7 +2966,7 @@ class Donut(App):
         args = [shutil.which(engine) or engine] + (["auth", "login"] if engine == "claude" else ["login"])
         with self.suspend():
             code = subprocess.call(args, cwd=self.project, env=env)
-        self.say(f"Signed in. Send your message again." if code == 0 else f"Login failed (exit {code}).")
+        self.say("Signed in. Send your message again." if code == 0 else f"Login failed (exit {code}).")
 
     async def native(self):
         profile = self.profiles[self.role]
