@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -269,13 +270,23 @@ class DroppedImageTests(unittest.IsolatedAsyncioTestCase):
     def test_dropped_forms(self):
         with tempfile.TemporaryDirectory() as temp:
             shot = self.make(temp)
-            for text in (shot.replace(" ", "\\ "), "'" + shot + "'", "file://" + shot.replace(" ", "%20"), "shot\\ one.png"):
+            forms = ["'" + shot + "'", '"' + shot + '"', "file://" + shot.replace(" ", "%20"), shot, "shot one.png"]
+            if os.name != "nt":  # A backslash escapes a space only where it is not the folder separator.
+                forms += [shot.replace(" ", "\\ "), "shot\\ one.png"]
+            for text in forms:
                 self.assertEqual(dropped_images(text, str(Path(temp).resolve())), [shot], text)
+            both = f'"{shot}" "{shot}"'
+            self.assertEqual(dropped_images(both, str(Path(temp).resolve())), [shot, shot])
 
     def test_dropped_rejects_non_images(self):
         with tempfile.TemporaryDirectory() as temp:
             shot = self.make(temp)
-            for text in (str(Path(temp) / "notes.txt"), str(Path(temp) / "a.png"), "look at " + shlex.quote(shot), "plain text"):
+            for text in (
+                str(Path(temp) / "notes.txt"),
+                str(Path(temp) / "a.png"),
+                "look at " + shlex.quote(shot),
+                "plain text",
+            ):
                 self.assertEqual(dropped_images(text, temp), [], text)
 
     async def test_dropped_paste_inserts_quoted_path(self):
@@ -287,7 +298,7 @@ class DroppedImageTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 draft = app.query_one(Draft)
-                app.post_message(events.Paste(shot.replace(" ", "\\ ")))
+                app.post_message(events.Paste('"' + shot + '"'))  # The quoted form every platform pastes.
                 await pilot.pause()
                 self.assertEqual(draft.text, shlex.quote(shot) + " ")
                 draft.load_text("")
@@ -309,7 +320,7 @@ class PastedImageTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def test_pasted_image_decodes_wrapped_and_prefixed(self):
-        wrapped = "\n".join(self.png[i:i + 76] for i in range(0, len(self.png), 76))
+        wrapped = "\n".join(self.png[i : i + 76] for i in range(0, len(self.png), 76))
         for text in (self.png, wrapped, "data:image/png;base64," + wrapped):
             ext, data = pasted_image(text)
             self.assertEqual((ext, data[:4]), ("png", b"\x89PNG"), text[:30])
@@ -1444,7 +1455,10 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(log.scroll_y, log.max_scroll_y)
             # When the turn ends, the usage line refreshes and can grow, which shrinks the transcript.
             app.query_one("#usage", Static).update("claude 5h\ncodex 5h\nqwen\nmore")
-            await pilot.pause(0.2)
+            for _ in range(40):  # The view follows after the next refresh, which a slow runner delays.
+                await pilot.pause(0.05)
+                if log.max_scroll_y > 0 and log.scroll_y == log.max_scroll_y:
+                    break
             self.assertGreater(log.max_scroll_y, 0)
             self.assertEqual(log.scroll_y, log.max_scroll_y)  # The exit line is still in view.
 
@@ -1691,7 +1705,9 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.task_title, "")
             folder = app.session_name
             app.name_task("fix the login bug on mobile")
-            self.assertIn((t := f"fix the login bug on mobile · {project} · Donut", f"\x1b]1;{t}\x07\x1b]2;{t}\x07")[1], written)
+            self.assertIn(
+                (t := f"fix the login bug on mobile · {project} · Donut", f"\x1b]1;{t}\x07\x1b]2;{t}\x07")[1], written
+            )
             written.clear()
             app.name_task("something else")
             self.assertEqual(written, [])
