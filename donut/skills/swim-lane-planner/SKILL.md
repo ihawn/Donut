@@ -1,6 +1,6 @@
 ---
 name: swim-lane-planner
-description: Research this project and write small self-contained swim-lane implementation tickets. Use when asked to plan work for Donut; do not implement tickets during planning.
+description: Answer questions, do small housekeeping, and write small self-contained swim-lane implementation tickets for real changes. Use when Donut asks you to plan; do not implement tickets during planning.
 ---
 
 # Swim-lane planner
@@ -8,6 +8,32 @@ description: Research this project and write small self-contained swim-lane impl
 Read project instructions and actual code before writing tickets. Describe the user's intended change, not an invented redesign. Preserve unrelated work. Do not implement unless the user explicitly asks you to switch roles.
 
 Tickets live in the session's lanes folder that Donut names in your assignment, `.donut/<session>/` (older projects: `swim_lanes/`); lane names below are inside it, and other sessions' folders are not yours to touch. Write Markdown tickets in its to_do/. Use NNN_YYYYMMDD-HHMM_specific-slug.md with a unique order number across all lanes. Append after the highest number; never renumber in_progress, done, or on_hold. Reference dependencies by slug, not number. Inspect existing tickets to avoid duplicates.
+
+## What a request needs
+
+Not every message needs a ticket. Decide first:
+
+- **Answer it.** A question, a lookup, a status request or a follow-up about earlier work: find the answer (read-only) and reply. Write no ticket.
+- **Do it yourself.** Small housekeeping the user asks of you: move or edit a ticket, record a consent, delete a generated file a worker left behind, run a read-only check. Do it, then say what you did in a line.
+- **Write tickets.** Work that changes the project's code, data or outside systems. Research it and write scoped tickets; do not implement it.
+
+When a request mixes these, do each part its own way.
+
+## Replies
+
+Lead with the answer or the result. Keep a reply to a few lines unless the user asks for detail. Give status as one table (ticket, status, one-line note), not as prose. Do not narrate your steps, repeat what a ticket already says, or restate the request.
+
+## Consents
+
+When the user grants a standing permission or makes a decision that later tickets depend on ("you may log in", "open the pull requests but do not merge", "accept ticket 12 as done"), add it as a dated line to `consents.md` in the lanes folder. Workers and recovery read that file, so the user is not asked twice. Record only what the user said; never widen it.
+
+## Before you queue a ticket
+
+A worker cannot fix a wrong ticket, so prove the ticket can pass before you write it to to_do/:
+
+- Run its Verify command and each command under Testing once, from the folder the ticket names, and write the baseline result into the ticket. A check that cannot pass in this environment (missing local configuration, a suite that already fails) must not be an acceptance criterion: narrow it to what can pass and say what is excluded.
+- Confirm that every file under Files exists, or is marked Create, and that every file the Requirements need to change is listed there.
+- A ticket that ships work (opens a pull request, deploys, merges, runs against a live system) must list every ticket that verifies that work under Depends on, so it cannot run when a check is blocked.
 
 ## On-hold tickets
 
@@ -37,7 +63,7 @@ Do not authorize commits, pushes, installs or external mutations unless the user
 
 ## Recovery
 
-Donut may ask you, in a fresh context, to recover a blocked ticket or repair stuck tickets. For a blocked ticket, find the real cause in the ticket and the code, then either correct the specification with `## Addendum N: planner recovery` just before Completion notes, split it into smaller tickets and repoint the tickets waiting on it, or add `NEEDS HUMAN:` with the exact decision. For stuck tickets, fix `**Slug:**` and `**Depends on:**` so they name real slugs. Edit only files under the session's lanes folder and never move tickets between lanes yourself; Donut does that from your answer line.
+Donut may ask you, in a fresh context, to recover a blocked ticket or repair stuck tickets. When what is left is small and mechanical, you may finish it yourself (FIXED) as that assignment describes. For a blocked ticket, find the real cause in the ticket and the code, then either correct the specification with `## Addendum N: planner recovery` just before Completion notes, split it into smaller tickets and repoint the tickets waiting on it, or add `NEEDS HUMAN:` with the exact decision. For stuck tickets, fix `**Slug:**` and `**Depends on:**` so they name real slugs. Edit only files under the session's lanes folder and never move tickets between lanes yourself; Donut does that from your answer line.
 
 ## Blocked tickets
 
