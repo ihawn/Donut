@@ -78,6 +78,18 @@ def for_project(project):
     return sorted(records, key=lambda record: record.get("updated", 0), reverse=True)
 
 
+def by_session(records):
+    """Records grouped into sessions, newest session first, each with its newest record first.
+
+    Each mode (plan, solo, review) keeps a conversation of its own, so one session holds several records.
+    /resume lists the session once. A record from before sessions stands alone.
+    """
+    groups = {}
+    for record in sorted(records, key=lambda record: record.get("updated", 0), reverse=True):
+        groups.setdefault(record.get("session") or record["id"], []).append(record)
+    return list(groups.values())
+
+
 def get(record_id):
     return next((record for record in load_all() if record["id"] == record_id), None)
 

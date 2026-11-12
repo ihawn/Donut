@@ -797,6 +797,7 @@ class Donut(App):
         self.project = project
         # Each window works from its own tickets folder, .donut/<session>/, made when it is first needed.
         self.session_name = session or workspace.new_name(project)
+        self.entered_session = session is not None
         self.task_title = ""  # Window title from the first chat message; the tickets folder keeps its name.
         self.config = load()
         self.mode = "plan"  # plan, work, review or solo
@@ -852,6 +853,7 @@ class Donut(App):
         self.follow = True  # Keep the transcript at its end until the user scrolls up.
         self.background_tasks = {}  # task id -> (kind, description) for shells and agents models left running
         self.threads = {}  # "plan", "solo", "review" -> the session holding that conversation now
+        self.waiting_resume = {}  # thread -> a resumed session's saved conversation, continued on first use
         # Every exchange in this window, whatever mode and model: each session is given what it has not seen.
         self.exchanges = []
         self.turn_tools = []
@@ -904,6 +906,14 @@ class Donut(App):
             pass
         self.welcome()
         self.add_spent(None)
+        if self.entered_session:
+            # Opened in a named session (donut -s NAME): its conversations go on, they do not start again.
+            mine = [r for r in conversations.for_project(self.project) if r.get("session") == self.session_name]
+            if self.simple:
+                mine = [r for r in mine if r.get("mode") == "solo"]
+            if self.continue_session(mine):
+                modes = ", ".join(self.waiting_resume)
+                self.say(Text(f"  Session {self.session_name} · its conversations continue ({modes}).", style=DIM))
         self.status("Ready")
         if not self.config.get("aliases"):
             self.say(Text("No accounts configured. Exit and run donut setup.", style=CORAL))
@@ -1466,6 +1476,14 @@ class Donut(App):
         """
         thread = purpose or "plan"
         key = self.session_key(alias, profile, purpose)
+        waiting = None
+        if track and resume is None and conversation is None and key not in self.sessions:
+            # First use of this mode since its session was resumed: continue its own saved conversation, not a new one.
+            waiting = self.waiting_resume.pop(thread, None)
+            if waiting:
+                conversation = waiting["id"]
+                # The provider's own session can be reopened only on the account that holds it.
+                resume = waiting.get("provider_id") if waiting.get("alias") == alias else None
         if conversation is not None and key in self.sessions:
             await self.sessions.pop(key).close()
         previous = self.threads.get(thread) if track and conversation is None else None
@@ -1514,6 +1532,16 @@ class Donut(App):
                 pass
             if self.exchanges:
                 self.say(Text(f"  {model_name(profile, alias)} continues the conversation from {old_name}.", style=DIM))
+        if waiting:
+            self.adopt(waiting, session)
+            turns = waiting.get("turns", 0)
+            self.say(
+                Text(
+                    f"  Continues this session's {waiting.get('mode', thread)} conversation "
+                    f"({turns} turn{'' if turns == 1 else 's'}).",
+                    style=DIM,
+                )
+            )
         if track:
             session.donut_conversation = thread  # Not .thread: Codex sessions keep their own thread id there.
             self.threads[thread] = session
@@ -1746,7 +1774,7 @@ class Donut(App):
         Tickets, model choices and the mode are kept; nothing from the earlier conversation is carried over.
         """
         sessions, self.sessions = list(self.sessions.values()), {}
-        self.threads, self.exchanges = {}, []
+        self.threads, self.exchanges, self.waiting_resume = {}, [], {}
         self.forget_route()
         self.background_tasks = {}
         self.ponytail_installed = {}
@@ -2600,24 +2628,30 @@ class Donut(App):
         if not records:
             self.say("No earlier conversations in this project yet.", DIM)
             return
+        sessions = conversations.by_session(records)
         if record_id is None:
-            rows = [
-                (
-                    (conversations.display_name(record) or record.get("title", "(untitled)"))[:56],
-                    record["id"],
-                    (f"{record.get('title', '')[:40]} · " if conversations.display_name(record) else "")
-                    + f"{record.get('mode', '?')} · {record.get('model') or record.get('alias')} · "
-                    f"{conversations.ago(record.get('updated'))} · {record.get('turns', 0)} turn"
-                    f"{'' if record.get('turns') == 1 else 's'}",
+            rows = []
+            for group in sessions[:40]:
+                # One row for a session, whatever modes it used: its newest conversation speaks for it.
+                record = group[0]
+                turns = sum(r.get("turns", 0) for r in group)
+                modes = " + ".join(dict.fromkeys(r.get("mode", "?") for r in group))
+                rows.append(
+                    (
+                        (conversations.display_name(record) or record.get("title", "(untitled)"))[:56],
+                        record["id"],
+                        (f"{record.get('title', '')[:40]} · " if conversations.display_name(record) else "")
+                        + f"{modes} · {record.get('model') or record.get('alias')} · "
+                        f"{conversations.ago(record.get('updated'))} · {turns} turn{'' if turns == 1 else 's'}",
+                    )
                 )
-                for record in records[:40]
-            ]
             record_id = await self.choose("Resume a conversation", rows)
             if not record_id:
                 return
         record = next((r for r in records if r["id"] == record_id), None)
         if record is None:
             raise ValueError("That conversation is not in this project's history.")
+        group = next(group for group in sessions if record in group)
         aliases = self.config.get("aliases", {})
         alias, role, mode = record.get("alias"), record.get("role"), record.get("mode")
         if alias not in aliases:
@@ -2649,19 +2683,8 @@ class Donut(App):
         resumed = await self.session(
             alias, profile, purpose, resume=record.get("provider_id"), conversation=record["id"]
         )
-        # The saved recap joins the window's history, so other modes and models can be given it too.
-        messages = record.get("messages", [])
-        for you, model in zip(messages[::2], messages[1::2]):
-            self.exchanges.append(
-                {
-                    "mode": mode,
-                    "model": record.get("model", ""),
-                    "you": you.get("text", ""),
-                    "answer": model.get("text", ""),
-                    "by": resumed,
-                }
-            )
-        resumed.donut_seen = len(self.exchanges)
+        self.adopt(record, resumed)
+        self.continue_session(group, skip=purpose or "plan")
         line = Text("  Resumed", style=f"bold {ORANGE}")
         line.append(f" · {mode.upper()} · {model_name(profile, alias)}", style=f"bold {TEAL}")
         line.append(f" · {conversations.display_name(record) or record.get('title', '')}", style=GRAY)
@@ -2673,6 +2696,40 @@ class Donut(App):
             self.say(Text("> " + you, style=f"bold {ORANGE}"))
             self.say(markdown(answer.strip() or "(no reply)"))
         self.say("  Continue where you left off.", DIM)
+
+    def continue_session(self, group, skip=None):
+        """Line up a session's saved conversations (newest first), one for each mode, to continue when that mode
+        is next used, with the model each had. skip is the mode already resumed."""
+        aliases = self.config.get("aliases", {})
+        self.waiting_resume = {}
+        for record in group:
+            thread = record.get("mode") if record.get("mode") in ("solo", "review") else "plan"
+            if thread == skip or thread in self.waiting_resume or record.get("role") not in ROLE_TITLES:
+                continue
+            self.waiting_resume[thread] = record
+            if record.get("alias") in aliases and not (record["role"] == "solo" and self.auto):
+                profile = dict(aliases[record["alias"]])
+                if record.get("model"):
+                    profile["model"] = record["model"]
+                self.selected[record["role"]], self.profiles[record["role"]] = record["alias"], profile
+        self.sync_reviewer()
+        return self.waiting_resume
+
+    def adopt(self, record, session):
+        """A resumed conversation's saved recap joins the window's history, so other modes and models can be
+        given it too."""
+        messages = record.get("messages", [])
+        for you, model in zip(messages[::2], messages[1::2]):
+            self.exchanges.append(
+                {
+                    "mode": record.get("mode"),
+                    "model": record.get("model", ""),
+                    "you": you.get("text", ""),
+                    "answer": model.get("text", ""),
+                    "by": session,
+                }
+            )
+        session.donut_seen = len(self.exchanges)
 
     async def ensure_role(self, role):
         """Entering a mode asks for its model only when none is set. Returns whether one is set now."""

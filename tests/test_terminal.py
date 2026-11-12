@@ -1304,6 +1304,62 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.session_name, first)
             self.assertEqual(workspace.relative(app.project, app.lanes), f".donut/{first}/")
 
+    async def test_a_session_is_one_resume_entry_and_each_mode_continues_its_own_conversation(self):
+        from donut import conversations
+
+        def turn(mode, alias, model, provider, text):
+            return conversations.record_turn(
+                None, self.temp.name, mode, mode, alias, model, provider, text, "ok", session="feature"
+            )
+
+        turn("solo", "claude", "claude-sonnet-5-5", "old-sid", "an earlier solo chat")
+        plan = turn("plan", "codex", "gpt-6.1", "thread-1", "plan the feature")
+        solo = turn("solo", "claude", "claude-sonnet-5-5", "sid-1", "do the feature")
+
+        class Provider:
+            def __init__(self, project, profile, emit, approve):
+                self.profile = profile
+
+            async def connect(self):
+                pass
+
+            async def close(self):
+                pass
+
+        app = Donut(Path(self.temp.name))
+        with patch("donut.terminal.session_class", return_value=Provider):
+            async with app.run_test(size=(160, 40)) as pilot:
+                await pilot.pause()
+                app.execute("/resume")
+                await pilot.pause()
+                rows = app.query_one(Menu).visible_rows
+                self.assertEqual(len(rows), 1)  # Three saved conversations, one session, one entry.
+                self.assertIn("solo + plan", rows[0][2])
+                self.assertIn("3 turns", rows[0][2])
+                await pilot.press("enter")
+                await pilot.pause(0.3)
+                self.assertEqual(app.mode, "solo")
+                resumed = app.threads["solo"]
+                self.assertEqual((resumed.resume_id, resumed.conversation_id), ("sid-1", solo))
+                # The plan conversation waits, with its own model, and continues when plan mode is next used.
+                self.assertEqual(app.waiting_resume["plan"]["id"], plan)
+                self.assertEqual((app.selected["plan"], app.profiles["plan"]["model"]), ("codex", "gpt-6.1"))
+                planner = await app.session(app.selected["plan"], app.profiles["plan"])
+                self.assertEqual((planner.resume_id, planner.conversation_id), ("thread-1", plan))
+                self.assertEqual(app.waiting_resume, {})
+                body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+                self.assertIn("Continues this session's plan conversation (1 turn).", body)
+                # /clear starts fresh: nothing is left waiting to continue.
+                app.waiting_resume = {"plan": {"id": plan}}
+                await app.start_fresh()
+                self.assertEqual(app.waiting_resume, {})
+        # Opened again in the same session (donut -s feature): its conversations continue, no new entry.
+        again = Donut(Path(self.temp.name), session="feature")
+        async with again.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            self.assertEqual({k: v["id"] for k, v in again.waiting_resume.items()}, {"solo": solo, "plan": plan})
+        self.assertEqual(len(conversations.by_session(conversations.for_project(self.temp.name))), 1)
+
     async def test_resume_switches_back_to_the_conversations_tickets_session(self):
         from donut import conversations
 
