@@ -445,7 +445,8 @@ class ClaudeSession:
             cwd=self.project,
             env=env,
             model=self.profile.get("model") or None,
-            setting_sources=["user", "project", "local"],
+            # bare: a one-question session (auto's rating) needs no settings, plugins or connectors in its prompt.
+            setting_sources=[] if getattr(self, "bare", False) else ["user", "project", "local"],
             permission_mode="plan"
             if getattr(self, "read_only", False)
             else native_permission("claude", self.permission),
@@ -455,7 +456,7 @@ class ClaudeSession:
             effort=self.profile.get("effort") or None,
             # Lets /permissions or Shift+Tab switch this live session to Full access later. It bypasses
             # nothing by itself; review sessions stay read-only and never get it.
-            extra_args={}
+            extra_args=({"strict-mcp-config": None, "tools": ""} if getattr(self, "bare", False) else {})
             if getattr(self, "read_only", False)
             # chrome: Claude Code's own switch for the Claude in Chrome extension, turned on with /chrome.
             else {

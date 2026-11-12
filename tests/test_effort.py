@@ -62,6 +62,15 @@ class OptionTests(unittest.TestCase):
             qwen, _ = providers.command({"engine": "ollama", "model": "q", "effort": "high"}, "task")
         self.assertEqual(claude[claude.index("--effort") + 1], "max")
         self.assertNotIn("--chrome", claude)
+        self.assertNotIn("--strict-mcp-config", claude)  # A worker keeps the user's connectors.
+        with patch("shutil.which", return_value="/bin/agent"):
+            summary, _ = providers.command({"engine": "claude", "model": "opus"}, "task", readonly=True)
+            review, _ = providers.command({"engine": "claude", "model": "opus"}, "task", review=True)
+        # Calls that use no connector load none, and a summary loads no settings either.
+        self.assertIn("--strict-mcp-config", summary)
+        self.assertEqual(summary[summary.index("--setting-sources") + 1], "")
+        self.assertIn("--strict-mcp-config", review)
+        self.assertNotIn("--setting-sources", review)  # A review still reads the project's instructions.
         with patch("shutil.which", return_value="/bin/agent"), patch.dict(os.environ, {"DONUT_CHROME": "1"}):
             worker, _ = providers.command({"engine": "claude", "model": "opus"}, "task")
             reviewer, _ = providers.command({"engine": "claude", "model": "opus"}, "task", review=True)
@@ -257,6 +266,15 @@ class ClaudeLaunchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0].extra_args, {"allow-dangerously-skip-permissions": None})
         self.assertEqual(seen[1].extra_args, {})  # Review stays read-only.
         self.assertEqual(seen[1].permission_mode, "plan")
+        self.assertEqual(seen[0].setting_sources, ["user", "project", "local"])
+        # A one-question session (auto's rating) loads no settings, connectors or tools: a far smaller prompt.
+        session = ClaudeSession(Path("."), {"model": "opus"}, lambda *e: None, None)
+        session.read_only = session.bare = True
+        with patch.object(claude_agent_sdk, "ClaudeSDKClient", Client):
+            await session._connect()
+        session.pump.cancel()
+        self.assertEqual(seen.pop().setting_sources, [])
+        session.bare = False
         # /chrome on: the session starts Claude Code with its Claude in Chrome switch; review never does.
         for read_only in (False, True):
             session = ClaudeSession(Path("."), {"model": "opus"}, lambda *e: None, None)
