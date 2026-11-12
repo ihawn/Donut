@@ -3004,6 +3004,7 @@ class Donut(App):
 
         session = cls(self.project, profile, emit, deny)
         session.permission, session.read_only = "ask", True
+        session.bare = True  # One question, no tools: keep settings, plugins and connectors out of its prompt.
         session.resume_id = session.conversation_id = None
         await session.connect()
         self.active = session  # So Ctrl+C can interrupt it.

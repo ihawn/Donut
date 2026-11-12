@@ -117,6 +117,15 @@ class TicketParsingTests(unittest.TestCase):
         self.assertIn("consents.md", worker)
         self.assertIn("Never open a pull request while a ticket is in swim_lanes/blocked/", worker)
 
+    def test_long_completion_notes_are_shortened_in_the_run_records(self):
+        self.assertEqual(runner.brief("short notes"), "short notes")
+        long = "BLOCKED: the login failed. " + "x" * 9000 + " Latest addition."
+        cut = runner.brief(long)
+        self.assertLess(len(cut), 2600)
+        self.assertTrue(cut.startswith("BLOCKED: the login failed."))  # The reason is at the start.
+        self.assertTrue(cut.endswith("Latest addition."))
+        self.assertIn("notes shortened", cut)
+
     def test_dependency_forms(self):
         self.assertEqual(parse_dependencies(None), [])
         self.assertEqual(parse_dependencies("None"), [])
