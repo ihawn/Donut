@@ -32,7 +32,7 @@ from .summaries import claude_context, codex_context, is_connected, mcp_servers,
 from .sessions import ClaudeSession, CodexSession, QwenSession
 from .planner_output import ticket_snapshot
 from .install_skills import install
-from . import background, effort, plugins, ponytail, routing, tickets, workspace
+from . import background, effort, plugins, ponytail, routing, spend, tickets, workspace
 from .platform import copy_native, open_window, window_command
 from .platform import process_options
 from .providers import PERMISSION_CYCLE, PERMISSION_MODES, ollama_base_url
@@ -48,6 +48,7 @@ DIM = "#8a96a3"
 
 # Lines the batch runner prints that belong in the status bar, not the transcript.
 RUNNER_PROGRESS = re.compile(r"^\[(?P<label>[^\]]*?) · (?P<seconds>\d+)s elapsed · waiting for agent output\]$")
+RUNNER_SPEND = re.compile(r"^Spend: (?:\$(?P<dollars>[0-9.]+)|not priced) \((?P<model>.*), (?P<where>\w+)\)$")
 RUNNER_TICKET = re.compile(r"^\[\d+/(?:\d+|all)\] (?P<ticket>\S+)")
 RUNNER_REVIEW = re.compile(r"^\[review \d+/\d+\] (?P<ticket>\S+)")
 RUNNER_RECOVER = re.compile(r"^\[recover\] (?P<ticket>\S+)")
@@ -876,7 +877,8 @@ class Donut(App):
         self.quotas = {}  # usage_key -> [{"window", "percent", "resets_at"}]; [] means no plan limits apply
         self.session_profiles = {}
         self.ponytail_installed = {}  # usage_key -> whether Ponytail is installed for that login
-        self.spent = 0.0  # Dollars the providers reported for this window's turns, shown on the input box.
+        self.spent = 0.0  # Dollars for everything this window ran, shown on the input box (see spend.py).
+        self.spend_by = {}  # (model, platform) -> dollars, or None when the model has no price; listed by /usage.
         self.estimates = {}  # Response id -> estimated dollars of the turn in progress, until its cost is reported.
 
     def compose(self):
@@ -1626,15 +1628,42 @@ class Donut(App):
             self.ponytail_installed[key] = plugins.installed(profile, "ponytail", self.project)
         return self.ponytail_installed[key]
 
+    def count_spend(self, model, where, dollars):
+        """Add dollars for work by a model on a platform to the one figure. None means the model has no price."""
+        key = (model or "default model", where)
+        if not spend.counted(where, self.config):
+            self.spend_by.setdefault(key, 0.0)  # A local model, or a plan counted as free: listed, adds nothing.
+        elif dollars is None:
+            self.spend_by.setdefault(key, None)
+        else:
+            self.spend_by[key] = (self.spend_by.get(key) or 0.0) + dollars
+            self.spent += dollars
+
     def add_spent(self, session):
-        """Add what a session's last turn cost to the amount on the input box. Only Claude reports a cost."""
-        reported = (getattr(session, "usage", None) or {}).get("reported_cost_usd")
-        if isinstance(reported, (int, float)):
-            # Claude reports the session's running cost; a lower figure means a new provider process started over.
+        """Add what a session's last turn cost to the amount on the input box.
+
+        Claude reports a cost; Codex and other models report tokens, which spend.py prices.
+        """
+        usage = getattr(session, "usage", None) or {}
+        profile = getattr(session, "profile", None) or {}
+        where = spend.platform(profile, getattr(session, "account", None))
+        running = usage.get("reported_cost_usd")
+        if profile.get("engine") == "codex" and usage.get("total"):
+            running = spend.cost(profile.get("model"), usage["total"], self.config)  # The thread's total so far.
+            if running is None:
+                self.count_spend(profile.get("model"), where, None)
+        if isinstance(running, (int, float)):
+            # A running total for the session; a lower figure means a new provider process started over.
             previous = getattr(session, "spent_reported", 0.0)
-            self.spent += reported - previous if reported >= previous else reported
-            session.spent_reported = reported
+            self.count_spend(profile.get("model"), where, running - previous if running >= previous else running)
+            session.spent_reported = running
             self.estimates.clear()  # The reported figure covers what was estimated.
+        elif usage and profile.get("engine") not in (None, "claude", "codex"):
+            if usage is not getattr(session, "spent_usage", None):  # A report for one turn: count it once.
+                session.spent_usage = usage
+                self.count_spend(profile.get("model"), where, spend.cost(profile.get("model"), usage, self.config))
+        if not spend.counted(where, self.config):
+            self.estimates.clear()
         estimate = sum(self.estimates.values())
         try:
             # "~" marks a figure that includes an estimate for the turn in progress.
@@ -3273,6 +3302,18 @@ class Donut(App):
                 if reset:
                     row.append(f"  resets in {reset}", style=DIM)
                 self.say(row)
+        if self.spend_by:
+            # What the one figure on the input box is made of, by model and by how its work is paid for.
+            self.say(Text(f"  Spend in this window   ${self.spent:.2f}", style=f"bold {ORANGE}"))
+            for (model, where), dollars in sorted(self.spend_by.items()):
+                row = Text(f"    {model} · {where}", style=GRAY)
+                if dollars is None:
+                    row.append('   no price set: add it under "prices" in the configuration', style=CORAL)
+                elif not spend.counted(where, self.config):
+                    row.append("   not counted" + (" (covered by a plan)" if where == "plan" else ""), style=DIM)
+                else:
+                    row.append(f"   ${dollars:.2f}", style=TEAL)
+                self.say(row)
 
     async def work_tickets(self, choice):
         words = choice.split()
@@ -3342,6 +3383,13 @@ class Donut(App):
                 progress = RUNNER_PROGRESS.match(line)
                 if progress:
                     continue  # The spinner line already shows the worker and its elapsed time.
+                spent = RUNNER_SPEND.match(line)
+                if spent:
+                    # What one worker, review or planner call of the run cost: it joins the figure on the input box.
+                    dollars = float(spent["dollars"]) if spent["dollars"] else None
+                    self.count_spend(spent["model"], spent["where"], dollars)
+                    self.add_spent(None)
+                    continue
                 started = RUNNER_TICKET.match(line)
                 if started:
                     ticket = started["ticket"]
