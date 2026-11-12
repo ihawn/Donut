@@ -501,6 +501,11 @@ print('finished', p.name)
             [(r["task"], r["status"]) for r in self.results()][:2],
             [("001_chimney.md", "Blocked"), ("001_chimney.md", "Done")],
         )
+        # The run's records log, without any model call of their own, what each call ran on and why it blocked.
+        blocked = self.results()[0]
+        self.assertEqual(blocked["recovery"], "requeued")
+        self.assertEqual([call["model"] for call in blocked["worker_calls"]], ["test"])
+        self.assertEqual(len(blocked["planner_calls"]), 1)
         runs = sorted((self.root / "state/donut").glob("run-*"))
         self.assertTrue((runs[-1] / "001.recover.log").exists())
         self.assertTrue((runs[-1] / "002.log").exists())  # The retry got its own log.

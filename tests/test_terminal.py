@@ -1584,6 +1584,17 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("answer 2", body)  # And this turn's answer is on screen.
             self.assertNotIn("ended its turn without a reply", body)
 
+    async def test_a_named_session_keeps_its_name_after_a_message(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.name_task("first question of a new window")
+            self.assertEqual(app.session_label(), "first question of a new window")  # Unnamed: the message names it.
+            app.task_title, app.session_name = "", "tendercare-fax"  # What /resume or donut -s leaves.
+            app.name_task("can you finish 023")
+            self.assertEqual(app.session_label(), "tendercare-fax")
+            self.assertTrue(app.window_title().startswith("tendercare-fax · "))
+
     async def test_chrome_is_a_saved_switch_for_new_claude_conversations(self):
         from donut.config import load
 

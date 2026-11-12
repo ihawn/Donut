@@ -172,7 +172,9 @@ def without_hidden_block_end(line, shown, state):
     return shown
 
 
-def run_agent(profile, project, prompt, log, summary=False, planner=False, review=False):
+def run_agent(profile, project, prompt, log, summary=False, planner=False, review=False, calls=None):
+    """Run one agent call. calls, when given, gets {"model", "where", "dollars"} for the call (dollars None: no
+    price), so a run's records keep what each ticket cost and which model did it."""
     args, env = command(profile, prompt, readonly=summary, review=review)
     log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(log.parent, 0o700)
@@ -274,6 +276,14 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
             if reported and where != "local" and not presentation:
                 amount = f"${dollars:.4f}" if priced else "not priced"
                 print(f"Spend: {amount} ({profile.get('model') or model}, {where})", flush=True)
+            if calls is not None:
+                calls.append(
+                    {
+                        "model": profile.get("model") or model,
+                        "where": where,
+                        "dollars": round(dollars, 6) if priced or where == "local" else None,
+                    }
+                )
             return code
         except KeyboardInterrupt:
             stop_process(process)
@@ -550,7 +560,7 @@ def read_recovery(log):
     return matches[-1][1].lower(), matches[-1][2].strip(" *.:,;—–-")[:300]
 
 
-def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log):
+def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log, calls=None):
     """Let the planner fix a blocked ticket. Returns "requeued" (another attempt), "fixed" (the planner finished
     it and Donut moved it to done) or None."""
     name = planner.get("model") or planner["engine"]
@@ -563,7 +573,8 @@ def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log
     if planner["engine"] == "ollama":
         activate(planner)
     log = run_dir / f"{number}.recover.log"
-    code = run_agent(planner, project, recovery_prompt(project, ticket, reason, tail(worker_log), dependents), log)
+    prompt = recovery_prompt(project, ticket, reason, tail(worker_log), dependents)
+    code = run_agent(planner, project, prompt, log, calls=calls)
     if planner["engine"] == "ollama" and worker["engine"] == "ollama":
         activate(worker)
     verdict, summary = read_recovery(log) if code == 0 else (None, "")
@@ -581,7 +592,7 @@ def recover_ticket(planner, worker, project, ticket, number, run_dir, worker_log
         print(paint(f"Recovery: needs a human decision. {summary}".rstrip(), "coral"), flush=True)
     else:
         print(paint("Recovery: no usable answer from the planner; the ticket stays blocked.", "orange"), flush=True)
-    return None
+    return verdict  # "split" or "needs human" (the ticket stays blocked), or None
 
 
 def repair_queue(planner, worker, project, broken, run_dir, lanes=None):
@@ -709,7 +720,7 @@ def run_batch(
                 record = dict(task=path.name)
                 prompt, log, round_number = worker_prompt(project, path), run_dir / f"{number}.log", 0
                 while True:
-                    code = run_agent(profile, project, prompt, log)
+                    code = run_agent(profile, project, prompt, log, calls=record.setdefault("worker_calls", []))
                     present = [p for p in locations if p.exists()]
                     final = present[0] if len(present) == 1 else None
                     record["exit_code"] = code
@@ -739,6 +750,7 @@ def run_batch(
                         review_prompt(project, final, files, checkpoints.diff(project, files, before=heads), others),
                         review_log,
                         review=True,
+                        calls=record.setdefault("review_calls", []),
                     )
                     if reviewer["engine"] == "ollama" and profile["engine"] == "ollama":
                         activate(profile)
@@ -808,7 +820,10 @@ def run_batch(
                         break
                     if planner and final == locations[4] and recovered.get(path.name, 0) < RECOVERIES:
                         recovered[path.name] = recovered.get(path.name, 0) + 1  # Bounded, so it cannot loop.
-                        outcome = recover_ticket(planner, profile, project, final, number, run_dir, log)
+                        calls = record.setdefault("planner_calls", [])
+                        outcome = recover_ticket(planner, profile, project, final, number, run_dir, log, calls)
+                        record["recovery"] = outcome  # Why it blocked, as the planner judged it: for donut stats.
+                        (run_dir / "results.json").write_text(json.dumps(records, indent=2))
                         if outcome == "requeued":
                             attempted.discard(path.name)
                         elif outcome == "fixed":

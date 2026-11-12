@@ -59,7 +59,7 @@ Use these sections:
 - Out of scope
 - Completion notes: placeholder for the worker's Changes, Tests, Deviations and Open issues.
 
-Do not authorize commits, pushes, installs or external mutations unless the user requested them. When the user asks for a branch or a pull request, say so in the ticket with the branch name and the base branch: the worker may then branch, commit, push that branch and open the pull request, but never commit on or push to `main` or `master`. Use project-specific skills only when relevant. Do not copy unrelated project rules into tickets. End with a brief ticket list and any unresolved assumptions.
+Do not authorize commits, pushes, installs or external mutations unless the user requested them. Pull requests are the default: when the planned work changes files in a git repository that has an `origin` remote, end that repository's work with a ticket that opens its pull request, unless the user said not to. Give that ticket the branch name and the base branch, and make it depend on every ticket that changes or verifies that repository. The worker may then branch, commit, push that branch and open the pull request, but never commit on or push to `main` or `master`, never merge, and never deploy. Work outside a repository, a lookup or a change the user asked to keep local gets no pull request. Use project-specific skills only when relevant. Do not copy unrelated project rules into tickets. End with a brief ticket list and any unresolved assumptions.
 
 ## Recovery
 
