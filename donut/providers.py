@@ -116,10 +116,13 @@ def command(profile, prompt, readonly=False, permission=None, review=False):
             "--include-partial-messages",
             "--no-session-persistence",
         ]
+        # With a fixed tool list, Claude Code cannot defer MCP tools: every connector's full definition goes into
+        # the prompt (over 100,000 tokens with a few connectors). These calls use none, so they load none.
         if readonly:
-            args += ["--permission-mode", "plan", "--tools", ""]
+            # A summary works from the evidence in its prompt alone: no tools, settings, plugins or connectors.
+            args += ["--permission-mode", "plan", "--tools", "", "--setting-sources", "", "--strict-mcp-config"]
         elif review:
-            args += ["--tools", "Read,Grep,Glob", "--permission-prompts", "none"]
+            args += ["--tools", "Read,Grep,Glob", "--permission-prompts", "none", "--strict-mcp-config"]
         elif permission == "full":
             args += ["--dangerously-skip-permissions"]
         else:
