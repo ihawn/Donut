@@ -288,6 +288,17 @@ def summary_prompt(records):
     )
 
 
+def brief(notes, limit=2500):
+    """Completion notes cut to their start and end for the run's records.
+
+    Every record goes into the prompts for the pull request and the final report, so long notes are paid for
+    again on each. The start holds the result or the BLOCKED reason, the end the latest additions.
+    """
+    if len(notes) <= limit:
+        return notes
+    return notes[: limit * 2 // 5] + "\n… (notes shortened; the ticket has them in full) …\n" + notes[-limit * 3 // 5 :]
+
+
 def lanes_of(project, ticket_path):
     """The lanes folder a ticket belongs to, as agents see it: .donut/<session>/ or swim_lanes/."""
     return relative(project, Path(ticket_path).parent.parent)
@@ -747,7 +758,7 @@ def run_batch(
                     record["unticked"] = gaps
                     count_text = f"{len(gaps)} acceptance check{'' if len(gaps) == 1 else 's'} not ticked"
                     print(paint(f"Partial: {count_text}: {'; '.join(gaps)[:300]}", "orange"), flush=True)
-                record.update(status=status, completion_notes=notes)
+                record.update(status=status, completion_notes=brief(notes))
                 after = checkpoints.changed_files(project)
                 if after is not None:
                     committed = set(checkpoints.committed_files(project, heads))
@@ -781,7 +792,7 @@ def run_batch(
                             if finished.unticked:
                                 fixed["unticked"] = finished.unticked
                             text = locations[0].read_text(encoding="utf-8")
-                            fixed["completion_notes"] = text.split("## Completion notes", 1)[-1][-6000:]
+                            fixed["completion_notes"] = brief(text.split("## Completion notes", 1)[-1][-6000:])
                             records.append(fixed)
                             (run_dir / "results.json").write_text(json.dumps(records, indent=2))
             if stopped or not planner or repaired or not room():
