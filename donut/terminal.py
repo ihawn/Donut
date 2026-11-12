@@ -1676,6 +1676,13 @@ class Donut(App):
         session = self.active
         started = time.monotonic()
         prompt = prompt if prompt is not None else text
+        held = getattr(session, "wake_buffer", None)
+        if held is not None:
+            # Text held back for a wake-up that did not end: show it, so this turn's answer is not held back too.
+            session.wake_buffer = None
+            if "".join(held).strip():
+                self.say(Text(f"  ⏰ {self.wake_title(session)} · woken by a background task", style=f"bold {TEAL}"))
+                self.say(markdown("".join(held).strip()))
         if self.shell_runs:
             prompt = background.shell_note(self.shell_runs) + prompt
             self.shell_runs = []

@@ -1569,6 +1569,21 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("The deploy finished; all checks green.", body)
             self.assertFalse(app.busy)
 
+    async def test_text_held_for_a_wake_up_that_never_ended_does_not_swallow_the_next_answer(self):
+        app = self.make_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await self.send(pilot, app, "/solo")
+            await self.send(pilot, app, "first question")
+            session = list(app.sessions.values())[-1]
+            session.wake_buffer = ["An earlier note."]  # A wake-up began while the window was busy and never ended.
+            await self.send(pilot, app, "second question")
+            self.assertIsNone(session.wake_buffer)
+            body = "\n".join(strip.text for strip in app.query_one(RichLog).lines)
+            self.assertIn("An earlier note.", body)  # Shown, not lost.
+            self.assertIn("answer 2", body)  # And this turn's answer is on screen.
+            self.assertNotIn("ended its turn without a reply", body)
+
     async def test_chrome_is_a_saved_switch_for_new_claude_conversations(self):
         from donut.config import load
 

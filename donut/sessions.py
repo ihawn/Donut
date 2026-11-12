@@ -554,9 +554,9 @@ class ClaudeSession:
         During a turn Donut asked for, messages go to that turn. Between turns, Claude Code may start a turn of
         its own, for example when a background shell it left running finishes; those are shown as a wake-up.
         """
-        from claude_agent_sdk import SystemMessage
+        from claude_agent_sdk import SystemMessage, UserMessage
 
-        state = {}
+        self.waking = {}  # Not empty while a turn Claude Code started by itself is running.
         try:
             async for message in self.client.receive_messages():
                 if self.in_turn:
@@ -565,26 +565,31 @@ class ClaudeSession:
                 if self._track_task(message):
                     continue
                 if isinstance(message, SystemMessage):
-                    if getattr(message, "subtype", "") == "task_notification" and not state:
+                    if getattr(message, "subtype", "") == "task_notification" and not self.waking:
                         summary = getattr(message, "summary", "") or (message.data or {}).get("summary", "")
                         self.emit("background", summary or "A background task finished.")
                     continue
-                if not state:
-                    state = {"woken": True}
+                if isinstance(message, UserMessage) and isinstance(message.content, str):
+                    # Claude Code's echo of a command of its own ("Set model to ..." after a model switch). It is
+                    # not a turn and no result follows it, so it must not start a wake-up that never ends.
+                    continue
+                if not self.waking:
+                    self.waking = {"woken": True}
                     self.emit("wake_start", "")
                 try:
-                    finished = self._handle(message, state)
+                    finished = self._handle(message, self.waking)
                 except Exception as error:
                     self.emit("error", str(error))
                     finished = True
                 if finished:
-                    state = {}
+                    self.waking = {}
                     self.emit("wake_end", "")
         except Exception as error:
             await self.inbox.put(error)
 
     async def _query(self, text):
         self.in_turn = True
+        self.waking = {}  # A turn Claude Code had started by itself now ends inside this one.
         try:
             await self.client.query(text)
             state = {}
