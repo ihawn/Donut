@@ -81,6 +81,23 @@ class ClaudeWakeTests(unittest.IsolatedAsyncioTestCase):
                 ("wake_end", ""),
             ],
         )
+        events.clear()
+        # After a model switch Claude Code echoes its own command. It is not a turn: no wake-up starts, and the
+        # next answer is delivered as usual.
+        from claude_agent_sdk import UserMessage
+
+        await stream.put(UserMessage("<local-command-stdout>Set model to `opus`</local-command-stdout>"))
+        await asyncio.sleep(0.1)
+        self.assertEqual(events, [])
+        self.assertEqual(session.waking, {})
+        await asyncio.wait_for(session._query("and now"), 2)
+        self.assertEqual(events, [("text", "asked: and now")])
+        # A turn Claude Code started by itself that a new message overtakes does not stay open.
+        await stream.put(AssistantMessage([TextBlock("Still checking.")], "m"))
+        await asyncio.sleep(0.1)
+        self.assertTrue(session.waking)
+        await asyncio.wait_for(session._query("status?"), 2)
+        self.assertEqual(session.waking, {})
         session.pump.cancel()
 
 
