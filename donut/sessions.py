@@ -505,6 +505,9 @@ class ClaudeSession:
             UserMessage,
         )
 
+        if type(message).__name__ == "SystemMessage" and getattr(message, "subtype", "") == "init":
+            # "none" is a plan login; anything else is an API key. The spend figure needs to know which.
+            self.account = (getattr(message, "data", None) or {}).get("apiKeySource")
         if isinstance(message, RateLimitEvent):
             windows = claude_usage(message.rate_limit_info)
             if windows:

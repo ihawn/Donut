@@ -10,7 +10,8 @@ import sys
 import tempfile
 import queue
 import threading
-from . import checkpoints, pullrequest
+from . import checkpoints, pullrequest, spend
+from .config import load as load_config
 from .config import state_dir
 from .install_skills import worker_skill
 from .providers import command, activate
@@ -150,6 +151,14 @@ def render_event(line, show_thinking=True, model="Agent", level="full"):
     return ""
 
 
+def spend_config():
+    """The configuration's prices, for token reports of a run. Read once for each call; a missing file is none."""
+    try:
+        return load_config()
+    except (OSError, ValueError):
+        return {}
+
+
 def without_hidden_block_end(line, shown, state):
     """What to print for a stream line, minus the closing newline of a block the user's level hides.
 
@@ -176,6 +185,7 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
     events = queue.Queue()
     failed = False
     block = {}
+    init, dollars, priced, reported = {}, 0.0, True, False
     with log.open("w", encoding="utf-8") as output, log.with_suffix(".jsonl").open("w", encoding="utf-8") as raw:
         os.chmod(log, 0o600)
         os.chmod(log.with_suffix(".jsonl"), 0o600)
@@ -234,8 +244,19 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
                         and isinstance(item.get("model"), str)
                     ):
                         model = item["model"]
+                        init = item
                     if isinstance(item, dict) and (item.get("is_error") or item.get("type") == "turn.failed"):
                         failed = True
+                    if isinstance(item, dict) and item.get("type") in ("result", "turn.completed"):
+                        # Claude gives the call's cost; Codex and Qwen give tokens, priced by spend.py.
+                        reported = True
+                        if isinstance(item.get("total_cost_usd"), (int, float)):
+                            dollars += item["total_cost_usd"]
+                            init = dict(init, apiKeySource=spend.claude_account(init, item.get("modelUsage")))
+                        else:
+                            found = spend.cost(profile.get("model") or model, item.get("usage"), spend_config())
+                            priced = priced and found is not None
+                            dollars += found or 0.0
                 except ValueError:
                     pass
                 rendered = render_event(line, show_thinking=not summary, model=model)
@@ -248,7 +269,12 @@ def run_agent(profile, project, prompt, log, summary=False, planner=False, revie
                     print(styled.feed(shown), end="", flush=True)
                 if presentation:
                     presentation.feed(line)
-            return process.wait() or int(failed)
+            code = process.wait() or int(failed)
+            where = spend.platform(profile, init.get("apiKeySource"))
+            if reported and where != "local" and not presentation:
+                amount = f"${dollars:.4f}" if priced else "not priced"
+                print(f"Spend: {amount} ({profile.get('model') or model}, {where})", flush=True)
+            return code
         except KeyboardInterrupt:
             stop_process(process)
             raise
