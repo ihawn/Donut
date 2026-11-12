@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -216,6 +217,9 @@ class ConversationStoreTests(unittest.TestCase):
             # /resume shows every exchange in full, from the transcript kept beside the list.
             shown = conversations.transcript(saved)
             self.assertEqual(len(shown), 10)
+            # Each exchange is logged with the model that answered and its cost, for later analysis.
+            first = json.loads(conversations.transcript_path(record).read_text().splitlines()[0])
+            self.assertEqual((first["model"], first["dollars"]), ("opus", None))
             self.assertEqual(shown[0], ("ask 0", "x" * 5000))
             if os.name != "nt":
                 self.assertEqual(conversations.transcript_path(record).stat().st_mode & 0o777, 0o600)

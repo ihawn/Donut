@@ -1692,8 +1692,10 @@ class Donut(App):
             # Claude Code wakes itself when a background shell ends; the others learn Donut's DONUT-WAIT line.
             prompt += background.WAIT_NOTE
             session.told_wait = True
+        before = self.spent
         await session.query(prompt)
         self.add_spent(session)
+        session.turn_spend = self.spent - before  # Saved with the exchange, for donut stats.
         self.remember_exchange(session, text)
         if waits or getattr(session, "donut_waits", False):
             command = background.wait_request(self.turn_text)
@@ -2421,6 +2423,7 @@ class Donut(App):
                 text,
                 self.turn_text,
                 session=self.session_name,
+                dollars=round(getattr(session, "turn_spend", 0.0), 6),
             )
         except OSError as error:
             self.say(f"Conversation not saved for /resume: {error}", DIM)
@@ -2558,7 +2561,9 @@ class Donut(App):
     def name_task(self, text):
         """The first chat message of the window names its tab; /rename or later messages do not get overridden by it."""
         text = " ".join(text.split())
-        if not self.task_title and text and text[0] not in "/!":
+        named = conversations.display_name({"session": self.session_name})
+        # A named session keeps its name on the tab; only a session still named after its start time takes the message.
+        if not named and not self.task_title and text and text[0] not in "/!":
             self.task_title = _clip(text, 40)
             self.show_title()
 
@@ -2714,6 +2719,7 @@ class Donut(App):
         self.set_mode(mode)
         if record.get("session") and workspace.valid(record["session"]):
             self.session_name = record["session"]
+            self.task_title = ""  # The resumed session's own name, not a message from before, names the window.
         purpose = mode if mode in ("solo", "review") else None
         self.status("resuming")
         resumed = await self.session(

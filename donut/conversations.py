@@ -94,7 +94,9 @@ def get(record_id):
     return next((record for record in load_all() if record["id"] == record_id), None)
 
 
-def record_turn(record_id, project, mode, role, alias, model, provider_id, user_text, answer, session=None):
+def record_turn(
+    record_id, project, mode, role, alias, model, provider_id, user_text, answer, session=None, dollars=None
+):
     """Add one exchange to a conversation, creating it on its first turn. Returns the record's id."""
     records = load_all()
     record = next((r for r in records if r["id"] == record_id), None) if record_id else None
@@ -136,8 +138,10 @@ def record_turn(record_id, project, mode, role, alias, model, provider_id, user_
     _write(records)
     path = transcript_path(record["id"])
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The model that answered and what it cost, for donut stats.
+    line = {"you": user_text, "answer": answer or "", "model": model or alias, "dollars": dollars}
     with open(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a", encoding="utf-8") as file:
-        file.write(json.dumps({"you": user_text, "answer": answer or ""}) + "\n")
+        file.write(json.dumps(line) + "\n")
     return record["id"]
 
 
