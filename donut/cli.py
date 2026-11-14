@@ -8,7 +8,7 @@ import tempfile
 from .config import check_project, load, role_choice, state_dir, use_profile
 from .install_skills import install
 from .providers import validate, activate
-from .runner import run_agent, run_batch
+from .runner import VERIFY_FIXES, run_agent, run_batch
 from .planner_output import ticket_snapshot, show_created_tickets
 from .setup import setup, discover
 from .ui import banner, welcome, release_version, paint
@@ -146,6 +146,25 @@ def main():
         metavar="N",
         help="with --work: reviews per ticket before it is blocked (default 3)",
     )
+    parser.add_argument(
+        "--fallback",
+        metavar="ALIAS",
+        help="with --work: alias that takes over when the worker's provider fails, or off (default: the worker alias's \"fallback\")",
+    )
+    parser.add_argument(
+        "--verify-fixes",
+        type=int,
+        default=VERIFY_FIXES,
+        metavar="N",
+        help=f"with --work: times a failed Verify goes back to the worker before the ticket is blocked (default {VERIFY_FIXES}, 0 = never)",
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="with --work: run up to N independent tickets at once, each in its own git worktree (turns on --checkpoint)",
+    )
     sub = parser.add_subparsers(dest="action")
     init = sub.add_parser(
         "setup", parents=[shared], help="choose local/hosted orchestrator, discover models and set up project"
@@ -255,11 +274,14 @@ def main():
 
             reviewer = resolve(args.review, "review", "review")
             planner = resolve(args.recover or config.get("recovery"), "plan", "recover")
-            for chosen in (reviewer, planner):
+            fallback = resolve(args.fallback or profile.get("fallback") or "off", "work", "fallback")
+            for chosen in (reviewer, planner, fallback):
                 if chosen:
                     validate(chosen)
             if args.review_rounds < 1:
                 raise ValueError("--review-rounds must be at least 1")
+            if args.verify_fixes < 0 or args.parallel < 1:
+                raise ValueError("--verify-fixes must be 0 or more, and --parallel at least 1")
             return run_batch(
                 profile,
                 project,
@@ -270,6 +292,10 @@ def main():
                 planner=planner,
                 lanes=workspace.lanes_dir(project, session),
                 pull_request=not args.no_pr and config.get("pull_requests", True) is not False,
+                fallback=fallback,
+                verify_fixes=args.verify_fixes,
+                repo_map=config.get("repo_map", True) is not False,
+                parallel=args.parallel,
             )
         return plan_session(profile, alias, project, args.request, session)
     except KeyboardInterrupt:

@@ -67,8 +67,10 @@ donut -m fast-local --work -p ../other-app   # choose the worker alias and the p
 
 - **Fresh context per ticket.** The worker never carries the whole project, or the last ticket's mistakes, into the next one.
 - **Tickets are files.** Plain Markdown in `.donut/<session>/{to_do,in_progress,on_hold,blocked,done}/`, one folder per session, so separate lines of work never share a queue. Read them, edit them, commit them, diff them.
-- **Donut checks the work, not just the story.** A ticket can carry a `**Verify:**` command. Donut runs it itself after the worker finishes; if it fails, the ticket is moved to `blocked/` and nothing that depends on it runs.
+- **Donut checks the work, not just the story.** A ticket can carry a `**Verify:**` command. Donut runs it itself after the worker finishes; if it fails, the worker gets the output and two tries to fix it, then the ticket is moved to `blocked/` and nothing that depends on it runs.
 - **A safety net you can see.** With `--checkpoint`, every ticket ends in a git commit. Every run records which files changed, in logs kept outside your repository.
+- **Several tickets at once.** `--parallel 3` works independent tickets side by side, each in its own git worktree, and brings each back as one commit.
+- **A second model on standby.** Give the worker a `fallback` alias and a provider outage or rate limit hands the run to it instead of stopping.
 - **Nothing silently stuck.** When the queue cannot continue, Donut says which tickets are waiting, on what, and which ones have broken metadata, instead of just stopping.
 - **Your keys stay yours.** Configuration stores model aliases and environment variable *names*. Provider CLIs own their own logins.
 

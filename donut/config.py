@@ -123,6 +123,7 @@ def save(config):
             "unload_others",
             "permission_mode",
             "effort",
+            "fallback",
         }
         if set(profile) - allowed:
             raise ValueError("Unexpected profile fields; credentials cannot be saved.")

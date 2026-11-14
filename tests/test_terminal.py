@@ -954,6 +954,20 @@ class ReviewerTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(turns.index(("work", "working")), turns.index(("review", "reviewing")))
 
 
+class WorkArgumentTests(unittest.TestCase):
+    def test_work_choices_become_command_line_arguments(self):
+        from donut.terminal import work_arguments
+
+        self.assertEqual(work_arguments("next 1"), ["next", "1"])
+        self.assertEqual(
+            work_arguments("next all parallel 3 checkpoint no-pr"),
+            ["next", "all", "--parallel", "3", "--checkpoint", "--no-pr"],
+        )
+        for bad in ("next all parallel", "next all parallel 0", "next all parallel x", "all"):
+            with self.assertRaises(ValueError):
+                work_arguments(bad)
+
+
 class ModeAndRoleTests(unittest.IsolatedAsyncioTestCase):
     """/planner, /worker, /reviewer and /soloist pick models; /plan, /work, /review and /solo enter the mode."""
 
