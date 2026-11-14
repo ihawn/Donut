@@ -172,7 +172,9 @@ class CLITests(unittest.TestCase):
             ):
                 self.assertEqual(main(), 0)
                 called = plan if mode == "plan" else work
-                self.assertEqual(called.call_args.args[0], profiles[alias])
+                # A worker with no effort chosen runs at low effort; the planner keeps its provider default.
+                expected = profiles[alias] if mode == "plan" else dict(profiles[alias], effort="low")
+                self.assertEqual(called.call_args.args[0], expected)
                 if argv == ["--work"]:
                     self.assertEqual(work.call_args.args[2], "all")
                 if "next" in argv:

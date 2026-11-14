@@ -24,9 +24,11 @@ class BatchTests(unittest.TestCase):
 import json, os, pathlib, re, sys
 args=sys.argv[1:]
 prompt=sys.stdin.read()
-args[args.index('--prompt')+1]=prompt
+if '--prompt' in args: args[args.index('--prompt')+1]=prompt
+else: args+=['--prompt',prompt]  # Claude reads its prompt from stdin alone.
+args+=['--tool-search',os.environ.get('ENABLE_TOOL_SEARCH','')]
 with open(os.environ['CALLS'],'a') as f: f.write(json.dumps(args)+'\\n')
-if '--max-tool-calls' in args:
+if '--max-tool-calls' in args or ['--tools',''] in [args[i:i+2] for i in range(len(args))]:
     print('| Task | Status | What changed | Tests | Human check |')
     sys.exit(0)
 if 'You are the planner, recovering' in prompt:
@@ -65,8 +67,13 @@ with new.open('a') as f: f.write('\\n## Completion notes\\n'+('BLOCKED: test fai
 print('finished', p.name)
 """)
         fake.chmod(0o755)
+        (self.bin / "claude").write_text(fake.read_text())
+        (self.bin / "claude").chmod(0o755)
         if os.name == "nt":
-            (self.bin / "qwen.cmd").write_text('@echo off\n"' + sys.executable + '" "' + str(fake) + '" %*\n')
+            for name in ("qwen", "claude"):
+                (self.bin / f"{name}.cmd").write_text(
+                    '@echo off\n"' + sys.executable + '" "' + str(self.bin / name) + '" %*\n'
+                )
         self.calls = self.root / "calls"
         self.env = dict(
             os.environ,
@@ -82,7 +89,7 @@ print('finished', p.name)
         path.write_text(f"**Slug:** `{slug}`\n**Depends on:** {deps}\n")
         return path
 
-    def run_batch(self, count, *extra, new_syntax=False, fallback=None):
+    def run_batch(self, count, *extra, new_syntax=False, fallback=None, more=None):
         config = self.root / "config/donut"
         config.mkdir(parents=True, exist_ok=True)
         alias = {
@@ -95,7 +102,7 @@ print('finished', p.name)
         aliases = {"test": alias}
         if fallback:
             aliases = {"test": dict(alias, fallback=fallback), fallback: dict(alias, model=fallback)}
-        (config / "config.json").write_text(json.dumps({"aliases": aliases}))
+        (config / "config.json").write_text(json.dumps({"aliases": dict(aliases, **(more or {}))}))
         self.env.update(
             XDG_CONFIG_HOME=str(self.root / "config"), XDG_STATE_HOME=str(self.root / "state"), TEST_DONUT_KEY="fixture"
         )
@@ -559,6 +566,38 @@ print('finished', p.name)
 
     def calls_made(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
+
+    def worker_calls(self):
+        return [c for c in self.calls_made() if "ONE named task" in c[c.index("--prompt") + 1]]
+
+    def test_worker_auto_moves_up_a_model_on_each_review_that_requests_changes(self):
+        self.ticket(1, "reject-once")
+        self.ticket(2, "always-reject")
+        claude = {"claude": {"engine": "claude"}}
+        result = self.run_batch("all", "--model", "auto", "--review", "test", new_syntax=True, more=claude)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)  # The second ticket blocks.
+        self.assertIn("Auto: haiku (max) → sonnet (low) → opus (low)", result.stdout)
+        self.assertIn("Auto: sonnet (low) takes the rework", result.stdout)
+        steps = [(c[c.index("--model") + 1], c[c.index("--effort") + 1]) for c in self.worker_calls()]
+        haiku, sonnet, opus = ("haiku", "max"), ("sonnet", "low"), ("opus", "low")
+        self.assertEqual(steps, [haiku, sonnet, haiku, sonnet, opus])  # Each ticket starts again on haiku.
+        self.assertEqual(len(runner.tasks(self.project, "done")), 1)
+        self.assertEqual([r["review"]["rounds"] for r in self.results()], [2, 3])  # One review per step.
+        self.assertTrue(all(c[-1] == "true" for c in self.calls_made()))  # Tool search for every agent.
+
+    def test_a_worker_model_without_effort_thinks_low_and_an_explicit_effort_stays(self):
+        self.ticket(1, "first")
+        self.ticket(2, "second")
+        more = {"claude": {"engine": "claude", "model": "opus"}, "deep": {"engine": "claude", "effort": "high"}}
+        self.assertEqual(self.run_batch("1", "--model", "claude", new_syntax=True, more=more).returncode, 0)
+        self.assertEqual(self.run_batch("1", "--model", "deep", new_syntax=True, more=more).returncode, 0)
+        self.assertEqual([c[c.index("--effort") + 1] for c in self.worker_calls()], ["low", "high"])
+
+    def test_worker_auto_needs_a_claude_or_codex_alias(self):
+        self.ticket(1, "first")
+        result = self.run_batch("all", "--model", "auto", new_syntax=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Worker auto needs a Claude or Codex alias", result.stderr)
 
     def test_reviewer_approves_and_the_worker_moves_on(self):
         self.ticket(1, "first")

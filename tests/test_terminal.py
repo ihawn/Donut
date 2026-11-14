@@ -1,4 +1,5 @@
 import asyncio
+import json
 import base64
 import os
 import tempfile
@@ -636,6 +637,35 @@ class WorkOutputTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(OSError):
                         await app.work_tickets("next 1")
         self.assertEqual(seen["files"], [str(Path("donut/profiles/personal.json"))])
+
+    async def test_worker_auto_is_saved_restored_and_launched_as_auto(self):
+        seen = {}
+
+        async def fake_exec(*args, **kwargs):
+            seen["args"] = args
+            home = Path(kwargs["env"]["XDG_CONFIG_HOME"])
+            seen["config"] = json.loads(next(home.rglob("config.json")).read_text())
+            raise OSError("stop here")
+
+        with tempfile.TemporaryDirectory() as temp:
+            config = {"aliases": {"claude": {"engine": "claude"}}, "default_model": "claude"}
+            with patch("donut.terminal.load", return_value=config), patch("donut.terminal.remember_role") as remember:
+                app = Donut(Path(temp))
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await app.choose_model("work", "auto")
+                    self.assertEqual(app.selected["work"], "auto")
+                    self.assertEqual((app.profiles["work"]["model"], app.profiles["work"]["effort"]), ("haiku", "max"))
+                    remember.assert_called_with("work", "auto", "haiku")
+                    with patch("donut.terminal.asyncio.create_subprocess_exec", side_effect=fake_exec):
+                        with self.assertRaises(OSError):
+                            await app.work_tickets("next 1")
+            self.assertEqual(seen["args"][len(seen["args"]) - seen["args"][::-1].index("-m")], "auto")
+            self.assertNotIn("auto", seen["config"]["aliases"])  # The worker builds its steps itself.
+            self.assertEqual(seen["config"]["aliases"]["claude"]["permission_mode"], app.permission)
+            config["roles"] = {"work": {"alias": "auto", "model": "haiku"}}
+            with patch("donut.terminal.load", return_value=config):
+                self.assertEqual(Donut(Path(temp)).selected["work"], "auto")
 
     async def test_progress_updates_the_status_bar_and_output_is_highlighted(self):
         import sys
