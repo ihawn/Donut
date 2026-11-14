@@ -13,7 +13,7 @@ Type `/` and a command list appears inline above the prompt, the way Claude Code
   | Pick the model | Enter the mode | What the mode does |
   |---|---|---|
   | `/planner` | `/plan` | Messages go to the planner. It answers questions and lookups itself, does small housekeeping you ask of it, and researches and writes tickets for work that changes the project. |
-  | `/worker` | `/work` | Runs tickets: `/work next 1`, `/work next all`, `/work next 3 checkpoint` (a git commit after each ticket). An approved run raises a pull request; add `no-pr` to skip it. |
+  | `/worker` | `/work` | Runs tickets: `/work next 1`, `/work next all`, `/work next 3 checkpoint` (a git commit after each ticket), `/work next all parallel 3` (up to three tickets at once). An approved run raises a pull request; add `no-pr` to skip it. |
   | `/reviewer` | `/review` | Messages go to the reviewer, which reads the project and never edits it. The reviewer also checks each finished ticket during `/work`. |
   | `/soloist` | `/solo` | Messages go to the soloist exactly as typed, like Claude Code: no planner, tickets, review or recovery. |
 
@@ -236,13 +236,31 @@ When nothing else can run because tickets have broken metadata (a missing `Slug`
 
 Except for a Fixed recovery, the planner edits only ticket files; Donut moves tickets between lanes. In the terminal the planner selected there does the recovery; `donut --work` uses the configured planner, `--recover ALIAS` picks another, and `--recover off` turns recovery off. Its answers are logged as `NNN.recover.log` and `repair.log`.
 
+### Parallel tickets
+
+`donut --work next all --parallel 3` (`/work next all parallel 3`) works up to three tickets at the same time. Each worker gets its own [git worktree](https://git-scm.com/docs/git-worktree) of the latest commit, so the workers never edit the same folder. Review and the Verify command run there too. When the workers finish, Donut applies each ticket's changes to your working tree in ticket order, moves the ticket to the lane its worker chose, and commits it.
+
+- **Which tickets run together.** Tickets that are eligible at the same time (every dependency done) and whose `## Files` lists do not overlap. A ticket that lists no files runs by itself, since it could touch anything.
+- **It needs commits.** `--parallel` turns on `--checkpoint`, and commits what is in the working tree before each group as `donut: checkpoint before parallel tickets`: a worktree starts from a commit, so finished work must be in one. The project must be the top folder of one git repository.
+- **When two tickets collide.** If a ticket's changes do not apply beside the others, nothing of it is applied, it is recorded as `Requeued`, and its worker runs again by itself on the result.
+- **Output.** Each ticket's output goes to `NNN.console.log` in the run logs and not to the screen, so the tickets do not mix. The worktrees are in the run's log folder and are removed at the end.
+- **Limits.** A worktree holds only what git holds: installed dependencies, build output and `.env` files that git ignores are not there, so a Verify command that needs them fails. A local Ollama server answers in parallel only when `OLLAMA_NUM_PARALLEL` allows it. Recovery of blocked tickets and the pull request still happen one at a time, in the project.
+
+### Fallback model
+
+When the worker's process fails (the provider is down, a rate limit, a login that expired) and leaves the ticket unfinished, a fallback alias works the ticket again and stays the worker for the rest of the run. Name it with `--fallback ALIAS`, or add `"fallback": "ALIAS"` to the worker's alias in the configuration so `/work` uses it too; `--fallback off` ignores the configured one. Without a fallback the batch stops, as before. A worker that finishes and reports `BLOCKED:` did not fail: that ticket goes to recovery, not to the fallback. The record in `results.json` names the fallback, and its log is `NNN.fallback.log`.
+
+### Project map
+
+Every worker prompt ends with a small map of the project (at most 4,000 characters), so a model with a small context finds the code without searching: the ticket's listed files with their declarations (classes, functions, types), then the other files of the same folders, then every other folder with its file count. It lists what git tracks or would track. Declarations are found by keyword, so a language that declares methods without one shows fewer. Set `"repo_map": false` in the configuration to leave it out.
+
 ### Ticket metadata
 
 Donut reads three `**Name:** value` lines from each ticket (a leading `-` bullet is fine):
 
 - `**Slug:**` identifies the ticket across lanes. If it is missing, the slug is taken from the filename (`012_20240101-1200_my-slug.md` becomes `my-slug`) and a warning is printed.
 - `**Depends on:**` lists slugs, backtick-quoted or bare and comma-separated, or `None`. A missing line means no dependencies.
-- `**Verify:**` is an optional shell command. After the worker exits successfully and leaves the ticket in `done/`, Donut runs it from the project root with a fifteen-minute limit. On a non-zero exit Donut appends `BLOCKED:` and the output tail to the ticket, moves it to `blocked/`, and skips its dependents. The command and its output are saved as `NNN.verify.log` next to the run log.
+- `**Verify:**` is an optional shell command. After the worker exits successfully and leaves the ticket in `done/`, Donut runs it from the project root with a fifteen-minute limit. On a non-zero exit Donut sends the failure back to the worker: it adds the command, the exit code and the end of the output to the ticket as `## Addendum N: verify failure`, moves the ticket to `in_progress/` and starts a fresh worker run, then runs the command again. After `--verify-fixes` such runs (default 2; `0` turns them off) Donut appends `BLOCKED:` and the output tail to the ticket, moves it to `blocked/`, and skips its dependents. The command and its output are saved as `NNN.verify.log` next to the run log (`NNN.verify2.log` and so on after a fix), and each fix run as `NNN.fixN.log`.
 
 A malformed ticket never stops the batch. When no more tickets are eligible, Donut prints a `Queue:` line for every unrun ticket in `to_do/` and `in_progress/` saying what it is waiting for: a dependency that is not done, one that is on hold or blocked, an unknown slug, or missing metadata.
 

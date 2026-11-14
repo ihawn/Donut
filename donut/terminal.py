@@ -281,6 +281,35 @@ SIMPLE_PLACEHOLDER = "Ask anything or say what to change, or type / for commands
 NEEDS_MODEL = {"/plugin", "/mcp", "/context", "/login", "/native", "/effort"}
 
 
+def work_arguments(choice):
+    """What follows --work on the command line for a /work choice such as "next all parallel 3 checkpoint"."""
+    words = choice.split()
+    no_pr = "no-pr" in words
+    words = [word for word in words if word != "no-pr"]
+    parallel = None
+    if "parallel" in words[:-1]:
+        at = words.index("parallel")
+        parallel = words[at + 1]
+        del words[at : at + 2]
+    checkpoint = words[-1:] == ["checkpoint"]
+    if checkpoint:
+        words = words[:-1]
+    if (
+        len(words) != 2
+        or words[0] != "next"
+        or not (words[1] == "all" or words[1].isdecimal() and int(words[1]) > 0)
+        or not (parallel is None or parallel.isdecimal() and int(parallel) > 0)
+    ):
+        raise ValueError("Use /work next COUNT [parallel N] [checkpoint] [no-pr] (COUNT is a positive integer or all).")
+    if parallel:
+        words += ["--parallel", parallel]
+    if checkpoint:
+        words.append("--checkpoint")
+    if no_pr:
+        words.append("--no-pr")
+    return words
+
+
 def session_class(engine):
     """The provider session class for an engine, or None when Donut has none."""
     if engine == "claude":
@@ -2141,7 +2170,7 @@ class Donut(App):
             )
         elif name == "/help":
             self.say(
-                "/plan · /work [next COUNT] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
+                "/plan · /work [next COUNT] [parallel N] [checkpoint] · /review · /solo · /resume · /session [NAME|new] · /next [COUNT] · /prev [COUNT] · /project [PATH] · /planner · /worker · /reviewer [ALIAS|planner|off] · /soloist · /model · /permissions [ask|accept_edits|auto|full] · /auto · /verbosity [quiet|normal|verbose|full] · /chrome [on|off] · /usage · /plugin · /mcp · /context · /clear (or /new) · /ponytail band · /copy · /login · /native · /harder · /routing · /simple · /exit\n!COMMAND runs a shell command in the project; the model sees its output with your next message. Shift+Tab cycles Ask, Accept edits and Auto. Messages sent during a turn are queued. Installed plugin and skill commands (such as Ponytail's) are listed under / and forwarded to the selected session in its own syntax. Use /native for built-ins requiring the provider’s own UI."
             )
         elif name in ("/plugin", "/mcp", "/context"):
             session = await self.session(self.selected[self.role], self.profiles[self.role], self.purpose)
@@ -3329,22 +3358,7 @@ class Donut(App):
                 self.say(row)
 
     async def work_tickets(self, choice):
-        words = choice.split()
-        no_pr = "no-pr" in words
-        words = [word for word in words if word != "no-pr"]
-        checkpoint = words[-1:] == ["checkpoint"]
-        if checkpoint:
-            words = words[:-1]
-        if (
-            len(words) != 2
-            or words[0] != "next"
-            or not (words[1] == "all" or words[1].isdecimal() and int(words[1]) > 0)
-        ):
-            raise ValueError("Use /work next COUNT [checkpoint] [no-pr] (COUNT is a positive integer or all).")
-        if checkpoint:
-            words.append("--checkpoint")
-        if no_pr:
-            words.append("--no-pr")
+        words = work_arguments(choice)
         alias = self.selected["work"]
         if not alias:
             raise ValueError("Run donut setup to configure a worker.")

@@ -82,24 +82,20 @@ print('finished', p.name)
         path.write_text(f"**Slug:** `{slug}`\n**Depends on:** {deps}\n")
         return path
 
-    def run_batch(self, count, *extra, new_syntax=False):
+    def run_batch(self, count, *extra, new_syntax=False, fallback=None):
         config = self.root / "config/donut"
         config.mkdir(parents=True, exist_ok=True)
-        (config / "config.json").write_text(
-            json.dumps(
-                {
-                    "aliases": {
-                        "test": {
-                            "engine": "openai",
-                            "model": "test",
-                            "base_url": "https://example.com/v1",
-                            "key_env": "TEST_DONUT_KEY",
-                            "auto_approve": True,
-                        }
-                    }
-                }
-            )
-        )
+        alias = {
+            "engine": "openai",
+            "model": "test",
+            "base_url": "https://example.com/v1",
+            "key_env": "TEST_DONUT_KEY",
+            "auto_approve": True,
+        }
+        aliases = {"test": alias}
+        if fallback:
+            aliases = {"test": dict(alias, fallback=fallback), fallback: dict(alias, model=fallback)}
+        (config / "config.json").write_text(json.dumps({"aliases": aliases}))
         self.env.update(
             XDG_CONFIG_HOME=str(self.root / "config"), XDG_STATE_HOME=str(self.root / "state"), TEST_DONUT_KEY="fixture"
         )
@@ -363,6 +359,149 @@ print('finished', p.name)
         records = json.loads((runs[-1] / "results.json").read_text())
         self.assertEqual([r["verify"] for r in records], ["failed (exit 3)", "passed"])
         self.assertTrue((runs[-1] / "001.verify.log").exists())
+
+    def test_a_failed_verify_goes_back_to_the_worker_before_it_blocks(self):
+        path = self.ticket(1, "checked")
+        check = "import pathlib,sys; sys.exit(0 if 'veri'+'fy failure' in pathlib.Path(sys.argv[1]).read_text() else 3)"
+        path.write_text(
+            path.read_text() + f'**Verify:** "{sys.executable}" -c "{check}" swim_lanes/done/001_checked.md\n'
+        )
+        result = self.run_batch("all", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Verify: sending the failure back to the worker (fix 1/2)", result.stdout)
+        done = (self.project / "swim_lanes/done/001_checked.md").read_text()
+        self.assertIn("## Addendum 1: verify failure", done)
+        self.assertIn("(exit 3)", done)
+        record = self.results()[0]
+        self.assertEqual((record["status"], record["verify"], record["verify_fixes"]), ("Done", "passed", 1))
+        prompts = [c[c.index("--prompt") + 1] for c in self.calls_made()]
+        workers = [p for p in prompts if "ONE named task" in p]
+        self.assertEqual(len(workers), 2)
+        self.assertIn("Addendum N: verify failure", workers[1])
+        self.assertIn("swim_lanes/in_progress/001_checked.md", workers[1])
+
+    def test_verify_fixes_zero_blocks_at_the_first_failure(self):
+        path = self.ticket(1, "checked")
+        path.write_text(path.read_text() + "**Verify:** `exit 3`\n")
+        result = self.run_batch("all", "--verify-fixes", "0", new_syntax=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(self.calls_made()), 2)  # One worker plus the summary.
+        self.assertTrue((self.project / "swim_lanes/blocked/001_checked.md").exists())
+
+    def fail_first_call(self):
+        """Make the fake agent exit 7 the first time it is called, like a provider that is down."""
+        fake = self.bin / "qwen"
+        marker = json.dumps(str(self.root / "failed-once"))
+        fake.write_text(
+            fake.read_text().replace(
+                "prompt=sys.stdin.read()\n",
+                f"prompt=sys.stdin.read()\nm=pathlib.Path({marker})\nif not m.exists():\n    m.write_text('')\n    sys.exit(7)\n",
+                1,
+            )
+        )
+
+    def test_the_fallback_alias_takes_over_when_the_worker_fails(self):
+        self.ticket(1, "first")
+        self.ticket(2, "second")
+        self.fail_first_call()
+        result = self.run_batch("all", new_syntax=True, fallback="backup")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Fallback: backup takes over if the worker fails", result.stdout)
+        self.assertIn("Worker failed (exit 7); backup takes over for the rest of the run.", result.stdout)
+        self.assertEqual(len(runner.tasks(self.project, "done")), 2)
+        records = self.results()
+        self.assertEqual(records[0]["fallback"], "backup")
+        self.assertEqual([c["model"] for c in records[0]["worker_calls"]], ["test", "backup"])
+        self.assertEqual([c["model"] for c in records[1]["worker_calls"]], ["backup"])  # It stays for the run.
+
+    def test_an_unknown_fallback_alias_is_refused(self):
+        self.ticket(1, "first")
+        result = self.run_batch("all", "--fallback", "nobody", new_syntax=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Unknown fallback alias: nobody", result.stderr)
+
+    def git_project(self):
+        git_env = dict(
+            GIT_CONFIG_GLOBAL=str(self.root / "no-gitconfig"), GIT_CONFIG_SYSTEM=str(self.root / "no-gitconfig")
+        )
+        subprocess.run(["git", "init", "-q"], cwd=self.project, check=True, env=dict(os.environ, **git_env))
+        self.env.update(git_env)
+        # The fake worker writes each file its ticket names with WRITE:, so a ticket changes code.
+        fake = self.bin / "qwen"
+        fake.write_text(
+            fake.read_text().replace(
+                "blocked='block-me'",
+                "for name in re.findall(r'WRITE: (\\S+)', text): pathlib.Path(name).write_text(p.name)\nblocked='block-me'",
+                1,
+            )
+        )
+
+    def code_ticket(self, number, slug, listed, written, deps="None"):
+        path = self.ticket(number, slug, deps)
+        path.write_text(path.read_text() + f"\n## Files\n- `{listed}`\n\nWRITE: {written}\n")
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.project, capture_output=True, text=True, env=self.env).stdout
+
+    def test_parallel_tickets_run_in_worktrees_and_come_back_as_commits(self):
+        self.git_project()
+        self.code_ticket(1, "a", "a.txt", "a.txt")
+        self.code_ticket(2, "b", "b.txt", "b.txt")
+        self.code_ticket(3, "c", "c.txt", "c.txt", "`a`")
+        result = self.run_batch("all", "--parallel", "2", "--review", "test", "--no-pr", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Working 2 tickets in parallel", result.stdout)
+        self.assertEqual([r["review"]["verdict"] for r in self.results()], ["approved"] * 3)
+        self.assertEqual(len(runner.tasks(self.project, "done")), 3)
+        self.assertEqual(len(runner.tasks(self.project, "to_do")), 0)
+        for name, ticket in (("a.txt", "001_a.md"), ("b.txt", "002_b.md"), ("c.txt", "003_c.md")):
+            self.assertEqual((self.project / name).read_text(), ticket)
+        self.assertEqual(
+            self.git("log", "--format=%s").splitlines(),
+            [
+                "donut: done 003_c.md",
+                "donut: done 002_b.md",
+                "donut: done 001_a.md",
+                "donut: checkpoint before parallel tickets",
+            ],
+        )
+        self.assertEqual(
+            self.git("show", "--name-only", "--format=", "HEAD~1").split(),
+            ["b.txt", "swim_lanes/done/002_b.md"],
+        )
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(len(self.git("worktree", "list").splitlines()), 1)  # The worktrees are removed.
+        self.assertEqual([r["status"] for r in self.results()], ["Done", "Done", "Done"])
+        runs = sorted((self.root / "state/donut").glob("run-*"))
+        self.assertIn("finished 001_a.md", (runs[-1] / "001.console.log").read_text())
+
+    def test_a_parallel_ticket_that_does_not_merge_runs_again_alone(self):
+        self.git_project()
+        self.code_ticket(1, "a", "a.txt", "shared.txt")
+        self.code_ticket(2, "b", "b.txt", "shared.txt")
+        result = self.run_batch("all", "--parallel", "2", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("002_b.md: its changes do not apply beside the others; it runs again alone.", result.stdout)
+        self.assertEqual(len(runner.tasks(self.project, "done")), 2)
+        self.assertEqual((self.project / "shared.txt").read_text(), "002_b.md")
+        self.assertEqual([r["status"] for r in self.results()], ["Done", "Requeued", "Done"])
+
+    def test_tickets_with_overlapping_or_no_files_do_not_share_a_wave(self):
+        self.git_project()
+        self.code_ticket(1, "a", "src/", "a.txt")
+        self.code_ticket(2, "b", "src/b.txt", "b.txt")
+        self.ticket(3, "unlisted")
+        result = self.run_batch("all", "--parallel", "3", new_syntax=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("in parallel;", result.stdout)
+        self.assertEqual(len(runner.tasks(self.project, "done")), 3)
+
+    def test_parallel_outside_one_git_repository_is_refused_before_any_work(self):
+        self.ticket(1, "first")
+        result = self.run_batch("all", "--parallel", "2", new_syntax=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must be the top folder of one git repository", result.stderr)
+        self.assertFalse(self.calls.exists())
 
     def test_checkpoint_commits_after_each_ticket(self):
         git_env = dict(
