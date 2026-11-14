@@ -14,7 +14,16 @@ import re
 import time
 from .config import state_dir
 
-AUTO = "auto"  # The soloist "model" that turns routing on.
+AUTO = "auto"  # The soloist or worker "model" that turns routing on.
+
+# Worker auto: each ticket starts on the first step; each review that requests changes moves its rework one step up.
+# Claude Code resolves its model aliases per provider, so the same list works on Bedrock.
+WORKER_LADDER = (
+    ("claude", "haiku", "max"),
+    ("claude", "sonnet", "low"),
+    ("claude", "opus", "low"),
+    ("codex", "gpt-6-astra", "low"),
+)
 REQUEST_LIMIT = 4000  # Only the start of a long first message is rated.
 
 # Words in a model's name that mark the small and the large model of a family. Anything else sits between.
@@ -42,6 +51,16 @@ Reply with only the number.
 <request>
 {request}
 </request>"""
+
+
+def worker_ladder(aliases):
+    """The worker auto steps, cheapest first, as profiles of the first configured alias of each engine."""
+    first = {}
+    for profile in aliases.values():
+        first.setdefault(profile.get("engine"), profile)
+    return [
+        dict(first[engine], model=model, effort=effort) for engine, model, effort in WORKER_LADDER if engine in first
+    ]
 
 
 def strength(name):

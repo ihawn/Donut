@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from .config import check_project, load, role_choice, state_dir, use_profile
+from .routing import AUTO, worker_ladder
 from .install_skills import install
 from .providers import validate, activate
 from .runner import VERIFY_FIXES, run_agent, run_batch
@@ -142,9 +143,8 @@ def main():
     parser.add_argument(
         "--review-rounds",
         type=int,
-        default=3,
         metavar="N",
-        help="with --work: reviews per ticket before it is blocked (default 3)",
+        help="with --work: reviews per ticket before it is blocked (default 3; with -m auto, one per auto step)",
     )
     parser.add_argument(
         "--fallback",
@@ -208,6 +208,9 @@ def main():
         if not project.is_dir():
             raise ValueError(f"Project directory does not exist: {project}")
         use_profile(getattr(args, "profile", None) or os.environ.get("DONUT_PROFILE"))
+        # Connector, plugin and Chrome tools load by name only; a model fetches a tool's full definition when it
+        # needs it. Every agent Donut starts inherits this. A value already set is the user's choice.
+        os.environ.setdefault("ENABLE_TOOL_SEARCH", "true")
         check_project(project)
         session = getattr(args, "session", None)
         if session is not None and not workspace.valid(session):
@@ -244,7 +247,14 @@ def main():
                 print("No aliases yet. Run donut setup.")
             return 0
         role = "plan" if args.action == "plan" else "work"
-        if getattr(args, "model", None):
+        wanted = getattr(args, "model", None) or ((config.get("roles") or {}).get(role) or {}).get("alias")
+        ladder = None
+        if role == "work" and wanted == AUTO and AUTO not in config["aliases"]:
+            ladder = worker_ladder(config["aliases"])
+            if not ladder:
+                raise ValueError("Worker auto needs a Claude or Codex alias. Run donut setup.")
+            alias, profile = AUTO, ladder[0]
+        elif getattr(args, "model", None):
             alias = args.model
             if alias not in config["aliases"]:
                 raise ValueError("Choose a configured alias with -m, or run donut setup.")
@@ -278,6 +288,13 @@ def main():
             for chosen in (reviewer, planner, fallback):
                 if chosen:
                     validate(chosen)
+            # A worker model with no effort chosen thinks briefly; auto steps and an explicit effort are kept.
+            profile, fallback = (
+                dict(p, effort="low") if p and p["engine"] in ("claude", "codex") and not p.get("effort") else p
+                for p in (profile, fallback)
+            )
+            if args.review_rounds is None:
+                args.review_rounds = max(3, len(ladder or []))
             if args.review_rounds < 1:
                 raise ValueError("--review-rounds must be at least 1")
             if args.verify_fixes < 0 or args.parallel < 1:
@@ -296,6 +313,7 @@ def main():
                 verify_fixes=args.verify_fixes,
                 repo_map=config.get("repo_map", True) is not False,
                 parallel=args.parallel,
+                ladder=ladder,
             )
         return plan_session(profile, alias, project, args.request, session)
     except KeyboardInterrupt:

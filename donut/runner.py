@@ -707,11 +707,13 @@ def run_batch(
     verify_fixes=VERIFY_FIXES,
     repo_map=True,
     parallel=1,
+    ladder=None,
 ):
     """Work up to count tickets from one lanes folder: a session's .donut/<session>/ (default: swim_lanes/).
 
     fallback is the profile that takes over when the worker's provider fails. parallel is how many tickets may
-    run at once, each in its own git worktree.
+    run at once, each in its own git worktree. ladder is worker auto: profiles cheapest first; each ticket starts
+    on the first, and each review that requests changes moves its rework one up.
     """
     if count != "all" and (not count.isdecimal() or int(count) < 1):
         raise ValueError("count must be a positive integer or all")
@@ -731,6 +733,9 @@ def run_batch(
         f"Project: {project}\nTickets: {relative(project, lanes)}\nModel: {profile.get('model') or profile['engine']}\nRun logs: {run_dir}",
         flush=True,
     )
+    if ladder:
+        steps = " → ".join(f"{step['model']} ({step['effort']})" for step in ladder)
+        print(f"Auto: {steps}; a review that requests changes moves the rework one up", flush=True)
     if parallel > 1:
         print(f"Parallel: up to {parallel} tickets at once, each in its own git worktree", flush=True)
     if checkpoint:
@@ -762,7 +767,8 @@ def run_batch(
         """One ticket, from its worker to its record. root is the project, or the ticket's own worktree, and
         folder the tickets folder inside it. Returns the record, the lane the ticket ended in (None when it is
         missing or in several), the exit code, its notes and the worker's log."""
-        nonlocal profile
+        nonlocal profile, ladder
+        worker, rung = (ladder[0] if ladder else profile), 0
         before = checkpoints.changed_files(root)
         heads = checkpoints.heads(root)  # A worker the ticket lets commit moves these.
         locations = [folder / lane / path.name for lane in ("done", "in_progress", "to_do", "on_hold", "blocked")]
@@ -770,11 +776,11 @@ def run_batch(
         prompt, log = worker_prompt(root, path, repo_map), run_dir / f"{number}.log"
         round_number, fixes, extra = 0, 0, ""
         while True:
-            code = run_agent(profile, root, prompt, log, calls=record.setdefault("worker_calls", []))
+            code = run_agent(worker, root, prompt, log, calls=record.setdefault("worker_calls", []))
             present = [p for p in locations if p.exists()]
             final = present[0] if len(present) == 1 else None
             record["exit_code"] = code
-            if code and fallback and profile is not fallback and final in locations[1:3] and not _STOP.is_set():
+            if code and fallback and worker is not fallback and final in locations[1:3] and not _STOP.is_set():
                 # The provider failed (an outage, a rate limit, a bad login), not the ticket: the next ones
                 # would fail the same way, so the fallback keeps the run going from here.
                 record["fallback"] = fallback.get("model") or fallback["engine"]
@@ -785,7 +791,8 @@ def run_batch(
                     ),
                     flush=True,
                 )
-                profile = fallback
+                profile = worker = fallback
+                ladder = None  # The ladder's provider failed; the fallback works the rest of the run.
                 if profile["engine"] == "ollama":
                     activate(profile)
                 prompt, log = worker_prompt(root, final, repo_map, extra), log.with_name(log.stem + ".fallback.log")
@@ -833,8 +840,8 @@ def run_batch(
                 review=True,
                 calls=record.setdefault("review_calls", []),
             )
-            if reviewer["engine"] == "ollama" and profile["engine"] == "ollama":
-                activate(profile)
+            if reviewer["engine"] == "ollama" and worker["engine"] == "ollama":
+                activate(worker)
             verdict, feedback = read_verdict(review_log) if review_code == 0 else (None, "")
             record["review"] = dict(rounds=round_number, verdict=verdict or "unavailable", feedback=feedback[:600])
             if verdict == "approved":
@@ -860,6 +867,10 @@ def run_batch(
                 ),
                 flush=True,
             )
+            if ladder and rung + 1 < len(ladder):
+                rung += 1
+                worker = ladder[rung]
+                print(paint(f"Auto: {worker['model']} ({worker['effort']}) takes the rework", "orange"), flush=True)
             final, extra = send_back(final, feedback), REWORK
             prompt, log = worker_prompt(root, final, repo_map, extra), run_dir / f"{number}.rework{round_number}.log"
         notes = (

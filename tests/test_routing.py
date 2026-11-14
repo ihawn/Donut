@@ -408,3 +408,30 @@ class InterfaceOnlyTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerLadderTests(unittest.TestCase):
+    def test_the_ladder_uses_the_first_alias_of_each_engine_and_skips_missing_engines(self):
+        from donut import routing
+
+        aliases = {
+            "local": {"engine": "ollama", "model": "qwen"},
+            "work": {"engine": "claude", "claude_config_dir": "~/.claude-work"},
+            "home": {"engine": "claude"},
+            "gpt": {"engine": "codex", "model": "gpt-6-sol", "effort": "high"},
+        }
+        steps = [(s["engine"], s["model"], s["effort"]) for s in routing.worker_ladder(aliases)]
+        self.assertEqual(
+            steps,
+            [
+                ("claude", "haiku", "max"),
+                ("claude", "sonnet", "low"),
+                ("claude", "opus", "low"),
+                ("codex", "gpt-6-astra", "low"),
+            ],
+        )
+        self.assertEqual(routing.worker_ladder(aliases)[0]["claude_config_dir"], "~/.claude-work")
+        self.assertNotIn("fable", str(steps))
+        del aliases["gpt"]
+        self.assertEqual(len(routing.worker_ladder(aliases)), 3)
+        self.assertEqual(routing.worker_ladder({"local": aliases["local"]}), [])

@@ -327,6 +327,8 @@ def is_instant(text):
 
 
 def model_name(profile, alias):
+    if alias == routing.AUTO:
+        return "auto"
     return profile.get("model") or alias or "provider default"
 
 
@@ -842,6 +844,10 @@ class Donut(App):
             else:
                 name = alias or self.config.get(key) or next(iter(aliases), None)
                 self.selected[role], self.profiles[role] = name, copy.deepcopy(aliases.get(name, {}))
+        ladder = routing.worker_ladder(aliases)
+        saved_work = ((self.config.get("roles") or {}).get("work") or {}).get("alias")
+        if not alias and saved_work == routing.AUTO and routing.AUTO not in aliases and ladder:
+            self.selected["work"], self.profiles["work"] = routing.AUTO, ladder[0]
         soloist = role_choice(self.config, "solo")  # No default: /solo asks the first time.
         self.selected["solo"], self.profiles["solo"] = (
             (soloist[0], copy.deepcopy(soloist[1])) if soloist else (None, {})
@@ -2865,6 +2871,9 @@ class Donut(App):
         if not profile:
             self.say(f"No {ROLE_TITLES[role]} chosen; pick one with {ROLE_COMMANDS[role]}.", DIM)
             return
+        if alias == routing.AUTO:
+            self.say("  Auto sets each step's effort. Pick a model with /worker to set effort yourself.", DIM)
+            return
         name = model_name(profile, alias)
         self.status("checking effort levels")
         term, levels, default = await self.effort_options(role)
@@ -3019,8 +3028,13 @@ class Donut(App):
         """Pick the account and model for one role (planner, worker or soloist). Only that role changes."""
         aliases = self.config.get("aliases", {})
         automatic = (routing.AUTO, None)
+        ladder = routing.worker_ladder(aliases) if role == "work" else []
+        if ladder:
+            automatic = (routing.AUTO, ladder[0])
         if alias is not None:
-            if role == "solo" and alias == routing.AUTO and alias not in aliases:
+            if role in ("solo", "work") and alias == routing.AUTO and alias not in aliases:
+                if role == "work" and not ladder:
+                    raise ValueError("Worker auto needs a Claude or Codex alias. Run donut setup.")
                 selected = automatic
             elif alias not in aliases:
                 raise ValueError(
@@ -3032,11 +3046,19 @@ class Donut(App):
             rows = await self.model_rows()
             if role == "solo" and rows:
                 rows.append(("auto  picks a model for each conversation from how hard its request is", automatic))
+            if ladder:
+                steps = " → ".join(step["model"] for step in ladder)
+                rows.append(
+                    (
+                        f"auto  each ticket starts on {steps.split(' → ')[0]}; review feedback moves it up: {steps}",
+                        automatic,
+                    )
+                )
             title = "Model" if self.simple else "Account and model for the " + ROLE_TITLES[role]
             selected = await self.choose(title, rows) if rows else None
         if not selected:
             return
-        if selected == automatic:
+        if selected == automatic and role == "solo":
             self.set_auto()
             return
         if role == "solo":
@@ -3365,7 +3387,11 @@ class Donut(App):
         await asyncio.to_thread(install, self.project, Path.home(), quiet=True, session=self.session_name)
         with tempfile.TemporaryDirectory(prefix="donut-worker-") as temp:
             config = copy.deepcopy(self.config)
-            config["aliases"][alias] = dict(self.profiles["work"], permission_mode=self.permission)
+            if alias == routing.AUTO:
+                for profile in config["aliases"].values():  # The worker builds its auto steps from these.
+                    profile["permission_mode"] = self.permission
+            else:
+                config["aliases"][alias] = dict(self.profiles["work"], permission_mode=self.permission)
             if self.profiles.get("review"):
                 # A dedicated alias, so a reviewer on the same account as the worker keeps its own model.
                 config["aliases"]["donut-reviewer"] = copy.deepcopy(self.profiles["review"])
